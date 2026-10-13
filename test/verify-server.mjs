@@ -156,7 +156,10 @@ try {
     ok('manual refresh answered 200', manualRes.status === 200, String(manualRes.status));
     // Two GitHub fetches run back to back here (the manual one, then the queued settings one); wait for the second
     // to be broadcast rather than guessing how long GitHub takes today.
-    for (let i = 0; i < 90 && !/"reason":"settings"/.test(events.join('')); i++) await sleep(500);
+    // Only frames after the config event count: the stream's first frame replays the current snapshot, which may
+    // itself be a settings snapshot from the saves above.
+    const settled = () => { const t = events.join(''); const i = t.indexOf('event: config'); return i >= 0 && /"reason":"settings"/.test(t.slice(i)); };
+    for (let i = 0; i < 90 && !settled(); i++) await sleep(500);
     await sleep(500);
     const text = events.join('');
     const snaps = [...text.matchAll(/event: snapshot\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]));
