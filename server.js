@@ -103,14 +103,22 @@ const warn = (msg) => console.warn(`${new Date().toISOString()} ${msg}`);
 // served with and reloads itself when the server starts sending a different one (after an upgrade or an edit).
 
 const SERVER_HASH = createHash('sha256').update(await readFile(SERVER_PATH)).digest('hex').slice(0, 10);
-let page = { html: '', mtimeMs: -1, hash: '' };
+let page = { html: '', mtimeMs: -1, hash: '', csp: cspFor('') };
+
+// The page's inline script and stylesheet are allowed by hash, so the policy needs no 'unsafe-inline' and any
+// script injected into the page would be refused; Trusted Types enforcement refuses string-to-DOM sinks outright.
+function cspFor(html) {
+  const sha = (text) => `'sha256-${createHash('sha256').update(text).digest('base64')}'`;
+  const hashes = (tag) => [...html.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi'))].map((m) => sha(m[1])).join(' ') || "'none'";
+  return `default-src 'none'; script-src ${hashes('script')}; style-src ${hashes('style')}; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'`;
+}
 
 async function loadPage() {
   try {
     const st = await stat(PAGE_PATH);
     if (st.mtimeMs !== page.mtimeMs) {
       const html = await readFile(PAGE_PATH, 'utf8');
-      page = { html, mtimeMs: st.mtimeMs, hash: createHash('sha256').update(html).digest('hex').slice(0, 10) };
+      page = { html, mtimeMs: st.mtimeMs, hash: createHash('sha256').update(html).digest('hex').slice(0, 10), csp: cspFor(html) };
     }
   } catch (err) {
     warn(`could not read ${PAGE_PATH}: ${err.message}`);
@@ -814,17 +822,16 @@ function broadcast(event, data) {
 // ---------- HTTP ----------
 
 const MIME = { '.html': 'text/html; charset=utf-8' };
-const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
-const BASE_HEADERS = {
+const baseHeaders = () => ({
   'Cache-Control': 'no-store',
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
-  'Content-Security-Policy': CSP,
-};
+  'Content-Security-Policy': page.csp,
+});
 
 function send(res, status, body, type = 'application/json', extra = {}) {
-  res.writeHead(status, { ...BASE_HEADERS, 'Content-Type': type, ...extra });
+  res.writeHead(status, { ...baseHeaders(), 'Content-Type': type, ...extra });
   res.end(type === 'application/json' ? JSON.stringify(body) : body);
 }
 
@@ -911,7 +918,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/events') {
       await loadPage();
       // X-Accel-Buffering tells nginx to stream instead of buffering the event stream.
-      res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.writeHead(200, { ...baseHeaders(), 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       res.write(`retry: 5000\nevent: snapshot\ndata: ${JSON.stringify(publicSnapshot())}\n\n`);
       clients.add(res);
       const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -921,7 +928,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       // The same document the page receives, for scripts and status pages. ETag lets pollers skip unchanged data.
       const etag = `"${snapshot.fetchedAt || 'none'}-${snapshot.failedAt || ''}"`;
-      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...BASE_HEADERS, ETag: etag }); return res.end(); }
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...baseHeaders(), ETag: etag }); return res.end(); }
       return send(res, 200, publicSnapshot(), 'application/json', { ETag: etag });
     }
     if (req.method === 'GET' && url.pathname === '/healthz') {
@@ -996,7 +1003,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 202, { ok: true });
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/index.html')) {
-      if (req.method === 'HEAD') { res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': MIME['.html'] }); return res.end(); }
+      if (req.method === 'HEAD') { res.writeHead(200, { ...baseHeaders(), 'Content-Type': MIME['.html'] }); return res.end(); }
       const { html } = await loadPage();
       return send(res, 200, html.replace('__BUILD__', buildId()), MIME['.html']);
     }

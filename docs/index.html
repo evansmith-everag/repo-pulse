@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="text-scale" content="scale">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'sha256-ST674q0miJJGsIM6U4mMaXyAnQNg2wiB1CYbWgUNxTk='; script-src 'sha256-cf6bhWfBDBOOflV93ydEjXVUXVyWW20cW+FkY9/bDb8=' 'sha256-NtovQ/NMpKsO7pM/2x/c7+EOXZrxWruN6FZDFavLE3I='; base-uri 'none'; form-action 'none'">
 <title>Repo Pulse: a live dashboard for a few GitHub repositories</title>
 <meta name="description" content="A live dashboard for up to three GitHub repositories: pull requests that need review, checks on the branch you watch, the latest release, and what landed this week. One Node.js file plus one HTML file, no dependencies, public domain.">
 <meta property="og:title" content="Repo Pulse">
@@ -23,28 +25,40 @@
   /* Sibling of the product page: the same palette, the same serif for big figures, mono for meta lines,
      system fonts only. No icons, no gradients, no web fonts, no external requests. */
   :root {
-    --bg: #f5f6f3; --panel: #ffffff; --line: #dfe2da; --line-strong: #848d86; --fg: #1d2420; --muted: #66706a;
-    --accent: #2f6b4f; --ok: #2f7d4f; --warn: #8f5313; --bad: #b8433a;
+    --bg-l: #f5f6f3; --panel-l: #ffffff; --line-l: #dfe2da; --line-strong-l: #848d86; --fg-l: #1d2420; --muted-l: #66706a;
+    --accent-l: #2f6b4f; --ok-l: #2f7d4f; --warn-l: #8f5313; --bad-l: #b8433a;
+    --bg-d: #141815; --panel-d: #1c211e; --line-d: #2f3631; --line-strong-d: #6b766f; --fg-d: #e6ebe7; --muted-d: #98a39c;
+    --accent-d: #7cc39c; --ok-d: #6fcf97; --warn-d: #e3a35a; --bad-d: #ef8579;
+    --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l);
+    --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l);
     --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
     --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
-    --radius: 8px; color-scheme: light;
+    --radius: 8px;
+    color-scheme: light dark;
+    accent-color: var(--accent);
   }
+  /* Browsers without light-dark(): follow the system preference, then the manual toggle. */
   @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
-      --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
-    }
+    :root { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
   }
-  :root[data-theme="dark"] {
-    --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
-    --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
+  :root[data-theme="light"] { color-scheme: light; --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l); --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l); }
+  :root[data-theme="dark"] { color-scheme: dark; --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
+  @supports (color: light-dark(white, black)) {
+    :root, :root[data-theme] {
+      --bg: light-dark(var(--bg-l), var(--bg-d)); --panel: light-dark(var(--panel-l), var(--panel-d)); --line: light-dark(var(--line-l), var(--line-d));
+      --line-strong: light-dark(var(--line-strong-l), var(--line-strong-d)); --fg: light-dark(var(--fg-l), var(--fg-d)); --muted: light-dark(var(--muted-l), var(--muted-d));
+      --accent: light-dark(var(--accent-l), var(--accent-d)); --ok: light-dark(var(--ok-l), var(--ok-d)); --warn: light-dark(var(--warn-l), var(--warn-d)); --bad: light-dark(var(--bad-l), var(--bad-d));
+    }
   }
 
   * { box-sizing: border-box; }
   html { scroll-padding-top: 16px; }
   @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--font-body); -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.55 var(--font-body); -webkit-text-size-adjust: 100%; }
+  p { text-wrap: pretty; }
+  /* Everything after the hero screenshot is below the fold; lay it out when it comes near. */
+  #answers, #features, #how, #settings, #tv, #privacy, #run, #faq { content-visibility: auto; contain-intrinsic-size: auto none auto 40rem; }
   .wrap { max-width: 72rem; margin-inline: auto; padding-inline: 16px; }
   a { color: var(--accent); text-underline-offset: 2px; }
   a:hover { text-decoration-thickness: 2px; }
@@ -70,6 +84,7 @@
   p { margin: 0 0 12px; }
   p:last-child { margin-bottom: 0; }
   .prose, .sect-head { max-width: 62ch; }
+  .prose.team { margin-top: 28px; }
   .sect-head { margin-bottom: 28px; }
   .sect-head p { color: var(--muted); }
   section { padding-block: 56px; }
@@ -189,7 +204,7 @@
     </p>
     <ul class="facts" aria-label="At a glance">
       <li>No dependencies, no build step</li>
-      <li>Node.js 18 or newer</li>
+      <li>Node.js 22 or newer</li>
       <li>Windows, macOS, Linux, Docker</li>
       <li>Talks only to GitHub</li>
     </ul>
@@ -198,7 +213,7 @@
   <figure class="shot wrap">
     <picture>
       <source id="shot-src" srcset="images/dashboard-dark.png" media="(prefers-color-scheme: dark)">
-      <img src="images/dashboard-light.png" width="1280" height="1560"
+      <img src="images/dashboard-light.png" width="1280" height="1560" fetchpriority="high"
            alt="The Repo Pulse dashboard watching microsoft/vscode, react/react and vercel/next.js. A status strip reads Live, Updated a few seconds ago with the exact time, Polling every 1 minute, API 4,300 left, with Pause updates and Refresh now links. Each repository card has a checks chip (main running, main passing, canary running), three large figures for pull requests needing review with the age of the oldest, commits in the last 7 days with a seven-bar shape of the week, and pull requests merged in the last 7 days; then a line with the branch, last commit age and latest release; a counts line of open PRs, drafts, issues, untriaged issues and bug-labeled issues; and the three oldest open pull requests with author, review state and a community marker. Below the cards, a Velocity table lists Merged, Opened, Cycle time, First review, Commits, People, Issues, Stale PRs, CI failed and Alerts per repository with arrows against the previous week and a totals row, followed by a Recent commits table of the latest commits across the three repositories.">
     </picture>
     <figcaption>Watching three public repositories. Cards on top; the <strong>Velocity · last 7 days</strong> table and <strong>Recent commits</strong> below. The <code>≥</code> before a review count means it covers only the 15 oldest open pull requests. The screenshot follows your color scheme; the dashboard has the same light and dark themes.</figcaption>
@@ -289,7 +304,7 @@
     <ol class="steps">
       <li>
         <h3>Download and start</h3>
-        <p>Install Node.js 18 or newer, download the latest <code>repo-pulse-vX.Y.Z.zip</code> and unzip it. On Windows, double-click <code>start.cmd</code>. On macOS or Linux, run <code>sh start.sh</code>. Anywhere: <code>node server.js</code>. The start scripts open <code>http://127.0.0.1:4317</code> in your browser.</p>
+        <p>Install Node.js 22 or newer, download the latest <code>repo-pulse-vX.Y.Z.zip</code> and unzip it. On Windows, double-click <code>start.cmd</code>. On macOS or Linux, run <code>sh start.sh</code>. Anywhere: <code>node server.js</code>. The start scripts open <code>http://127.0.0.1:4317</code> in your browser.</p>
       </li>
       <li>
         <h3>Give it a token</h3>
@@ -359,7 +374,7 @@
     <div class="grid">
       <article class="card">
         <h3>From the zip</h3>
-<pre><code>1. Install Node.js 18 or newer
+<pre><code>1. Install Node.js 22 or newer
 2. Unzip repo-pulse-vX.Y.Z.zip
 3. Windows: double-click start.cmd
    macOS, Linux: sh start.sh</code></pre>
@@ -378,7 +393,7 @@ docker run -d --name repo-pulse --restart unless-stopped -e GITHUB_TOKEN=… -p 
         <p>Settings and the cache live in the <code>/data</code> volume; the container reports health through <code>/healthz</code>. There is no <code>gh</code> inside the image, so the token comes from the environment.</p>
       </article>
     </div>
-    <div class="prose" style="margin-top:28px">
+    <div class="prose team">
       <h3>For a team</h3>
       <p>Keep the server on loopback and put a reverse proxy with HTTPS (and ideally your SSO) in front of it. Set <code>ADMIN_TOKEN</code> so viewers cannot change settings, and run with <code>ALLOWED_HOSTS</code> naming the public host. Caddy keeps the <code>Host</code> header and streams server-sent events as is:</p>
 <pre><code>pulse.example.com {

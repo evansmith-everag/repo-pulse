@@ -22,7 +22,7 @@ The screenshots show public repositories; the full dashboard in [dark](docs/imag
 
 ## Download and run
 
-1. Install [Node.js](https://nodejs.org) 18 or newer.
+1. Install [Node.js](https://nodejs.org) 22 or newer (18 and 20 have reached end of life).
 2. Download the latest `repo-pulse-vX.Y.Z.zip` from the Releases page and unzip it.
 3. Give it a GitHub token. Either set `GITHUB_TOKEN` (or `GH_TOKEN`), or sign in with the [GitHub CLI](https://cli.github.com) (`gh auth login`) and the server will use that login. See "Which token is used" below.
 4. Start it:
@@ -88,7 +88,7 @@ Open `http://127.0.0.1:4317/?tv=1` on a wall display: the layout fills the scree
 
 ### This browser
 
-The Settings tab has a "This browser" panel for preferences that live in the browser, not in the shared settings: theme (system, light, dark), reduce motion, hide commits by bots, announce changes to screen readers, and browser notifications for new pull requests and failing checks. Keyboard shortcuts: `r` refresh, `p` pause, `d` dashboard, `s` settings, `t` cycle theme.
+The Settings tab has a "This browser" panel for preferences that live in the browser, not in the shared settings: theme (system, light, dark), reduce motion, hide commits by bots, announce changes to screen readers, browser notifications for new pull requests and failing checks, and whether the velocity table is shown. Each live update cross-fades into place in browsers with view transitions; "reduce motion" (or the system setting) makes it a plain swap. The theme override drives the page's `color-scheme`, so native controls and scrollbars follow it. Keyboard shortcuts: `r` refresh, `p` pause, `d` dashboard, `s` settings, `t` cycle theme, `v` velocity table.
 
 ## Which token is used
 
@@ -200,7 +200,7 @@ When bound to localhost (the default) the server rejects requests whose `Host` h
 npm test              # both suites; or npm run test:server / npm run test:ui
 ```
 
-Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the live runs. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; it needs Node 22 or newer, and `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs both on every push using the workflow's own token.
+Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the live runs. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; set `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs both suites on Node 22 (the oldest supported line) and Node 26 for every push to `main` and every pull request, using the workflow's own token.
 
 ## Releases
 

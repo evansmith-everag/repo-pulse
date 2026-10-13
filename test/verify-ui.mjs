@@ -85,9 +85,13 @@ try {
   const text = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.textContent.trim() ?? null`);
   const hidden = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.hidden ?? null`);
   const chips = () => evalJs(`document.querySelectorAll('#selected button').length`);
+  // Live updates arrive through handleSnapshot, which cross-fades via a view transition and resolves when the DOM is in place.
+  const snapshot = (expr) => evalJs(`(async () => { await handleSnapshot(${expr}); })()`);
   const nav = async (url) => { await send('Page.navigate', { url }); await sleep(400); };
 
   await send('Page.enable');
+  // The window-size flag is not always honoured by a headless browser; pin the viewport so layout checks are deterministic.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
 
   console.log('== Fixture dashboard ==');
   await nav(`${FIX}/`);
@@ -98,7 +102,7 @@ try {
   ok('label counts appear in the counts line', /7 bug/.test(await evalJs(`document.querySelectorAll('.card.ci-failing .meta')[1].textContent`)));
   ok('CI failures this week show on the card with the failing workflow', /checks 7d: 16 passed · 4 failed.*failing now: Nightly/.test(await text('.card.ci-failing .meta.ci')) && (await evalJs(`document.querySelector('.card.ci-failing .meta.ci a')?.href`)) === 'https://github.com/example/alpha/actions/runs/1', await text('.card.ci-failing .meta.ci'));
   ok('open security alerts show on the card', /2 open security alerts/.test(await text('.card.ci-failing')));
-  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.querySelectorAll('#velocity-total td').length`)) === 11);
+  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.querySelectorAll('#velocity-total th, #velocity-total td').length`)) === 11 && (await evalJs(`document.querySelector('#velocity-body th').scope`)) === 'row');
   const alphaRow = await evalJs(`[...document.querySelectorAll('#velocity-body tr')[0].cells].map(c => c.textContent)`);
   ok('velocity cells carry deltas, medians, people, issues, stale PRs, CI and alerts', alphaRow[1] === '5↑2' && alphaRow[3] === '20h' && alphaRow[4] === '4h' && alphaRow[5] === '18↑6' && alphaRow[6] === '3 · top 50%' && alphaRow[7] === '+9 / −4 (+5)' && alphaRow[8] === '2' && alphaRow[9] === '4 / 20 · Nightly' && alphaRow[10] === '2', JSON.stringify(alphaRow));
   ok('a repository without Actions shows a dash for CI', (await evalJs(`document.querySelectorAll('#velocity-body tr')[1].cells[9].textContent`)) === '—');
@@ -108,12 +112,12 @@ try {
   ok('"v" shows it again', !(await hidden('#velocity')));
 
   // an available release shows an update bar; the Settings panel mirrors it
-  await evalJs(`handleSnapshot({ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } });`);
+  await snapshot(`{ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } }`);
   ok('an available release shows an update bar with notes and an Update button', !(await hidden('#update-bar')) && /v99\.0\.0 is available \(running v1\.1\.0\)/.test(await text('#update-bar')) && (await evalJs(`document.querySelector('#update-bar button')?.textContent`)) === 'Update now', await text('#update-bar'));
   await evalJs(`document.getElementById('tab-settings').click()`);
   ok('the Updates panel reports the version and the available release', await until(`/Repo Pulse v1\\.1\\.0\\. Checked .*v99\\.0\\.0 is available/.test(document.getElementById('update-status').textContent) && !document.getElementById('update-install').hidden`), await text('#update-status'));
   await evalJs(`document.getElementById('tab-dashboard').click()`);
-  await evalJs(`handleSnapshot({ ...snap, update: { ...snap.update, available: false } });`);
+  await snapshot(`{ ...snap, update: { ...snap.update, available: false } }`);
   ok('the bar disappears when nothing is available', await hidden('#update-bar'));
   ok('failing checks mark the card and chip', await evalJs(`document.querySelector('.card.ci-failing .chip.bad')?.textContent`) === 'main ● failing');
   // The fixture's dates are fixed, so the age keeps growing: accept any compact duration rather than today's value.
@@ -129,11 +133,21 @@ try {
   ok('document title names the owner', (await evalJs('document.title')) === 'Repo Pulse · example', await evalJs('document.title'));
   ok('each card is a heading for screen readers', (await evalJs(`document.querySelectorAll('.card h2').length`)) === 4);
 
+  ok('the browser cross-fades live updates (view transitions supported here)', await evalJs(`typeof document.startViewTransition === 'function'`));
   // auto-reload: a snapshot with a different build id reloads the page (stubbed here) unless Settings has edits
-  await evalJs(`window.__reloaded = 0; reloadPage = () => { window.__reloaded++; }; sessionStorage.removeItem('repo-pulse:reloaded-for'); handleSnapshot({ ...snap, build: 'test.newer' });`);
+  await evalJs(`window.__reloaded = 0; reloadPage = () => { window.__reloaded++; }; sessionStorage.removeItem('repo-pulse:reloaded-for');`);
+  await snapshot(`{ ...snap, build: 'test.newer' }`);
   ok('a newer build id from the server reloads the page', (await evalJs(`window.__reloaded`)) === 1);
-  ok('the same newer build is not reloaded for twice (no loop)', (await evalJs(`handleSnapshot({ ...snap, build: 'test.newer' }); window.__reloaded`)) === 1 && !(await hidden('#update-note')));
+  await snapshot(`{ ...snap, build: 'test.newer' }`);
+  ok('the same newer build is not reloaded for twice (no loop)', (await evalJs(`window.__reloaded`)) === 1 && !(await hidden('#update-note')));
   await evalJs(`sessionStorage.removeItem('repo-pulse:reloaded-for'); document.getElementById('update-note').hidden = true; newerBuild = null;`);
+
+  // the velocity table folds into cards when its box is narrower than its eleven columns
+  await evalJs(`document.querySelector('#velocity .tablebox').style.width = '400px'`);
+  ok('a narrow velocity table stacks each row into a labelled card', await until(`getComputedStyle(document.querySelector('#velocity-body td')).display === 'block' && getComputedStyle(document.querySelector('#velocity thead')).display === 'none'`, 3000));
+  await evalJs(`document.querySelector('#velocity .tablebox').style.removeProperty('width')`);
+  ok('the velocity table returns to columns when wide again', await until(`getComputedStyle(document.querySelector('#velocity-body td')).display === 'table-cell'`, 3000), await evalJs(`JSON.stringify({ td: getComputedStyle(document.querySelector('#velocity-body td')).display, box: document.querySelector('#velocity .tablebox').clientWidth, viewport: innerWidth })`));
+  ok('the column definitions are available without hovering', (await evalJs(`document.querySelectorAll('#velocity .defs dt').length`)) === 9);
   ok('the page has a main landmark and a live announcer', (await evalJs(`Boolean(document.querySelector('main') && document.getElementById('announce').getAttribute('aria-live'))`)));
 
   // stale state: age the stamp and run the ticker
@@ -151,6 +165,10 @@ try {
   ok('"s" opens Settings', !(await hidden('#view-settings')));
   await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'dark'; t.dispatchEvent(new Event('change'));`);
   ok('theme preference applies and persists', (await evalJs(`document.documentElement.dataset.theme`)) === 'dark' && /"theme":"dark"/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
+  ok('the override drives color-scheme, so native controls and light-dark() tokens follow it', (await evalJs(`getComputedStyle(document.documentElement).colorScheme`)) === 'dark' && (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(20, 24, 21)');
+  await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'light'; t.dispatchEvent(new Event('change'));`);
+  ok('switching to light flips the tokens through color-scheme', (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(245, 246, 243)');
+  await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'dark'; t.dispatchEvent(new Event('change'));`);
   await evalJs(`var b = document.getElementById('pref-bots'); b.checked = false; b.dispatchEvent(new Event('change'));`);
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }))`);
   ok('turning off the bot filter shows bot commits', await until(`/dependabot/.test(document.getElementById('feed-body').textContent)`, 3000));
