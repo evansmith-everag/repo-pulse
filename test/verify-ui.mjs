@@ -106,6 +106,15 @@ try {
   ok('"v" hides the velocity table and remembers it', await hidden('#velocity') && /"velocity":false/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))`);
   ok('"v" shows it again', !(await hidden('#velocity')));
+
+  // an available release shows an update bar; the Settings panel mirrors it
+  await evalJs(`handleSnapshot({ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } });`);
+  ok('an available release shows an update bar with notes and an Update button', !(await hidden('#update-bar')) && /v99\.0\.0 is available \(running v1\.1\.0\)/.test(await text('#update-bar')) && (await evalJs(`document.querySelector('#update-bar button')?.textContent`)) === 'Update now', await text('#update-bar'));
+  await evalJs(`document.getElementById('tab-settings').click()`);
+  ok('the Updates panel reports the version and the available release', await until(`/Repo Pulse v1\\.1\\.0\\. Checked .*v99\\.0\\.0 is available/.test(document.getElementById('update-status').textContent) && !document.getElementById('update-install').hidden`), await text('#update-status'));
+  await evalJs(`document.getElementById('tab-dashboard').click()`);
+  await evalJs(`handleSnapshot({ ...snap, update: { ...snap.update, available: false } });`);
+  ok('the bar disappears when nothing is available', await hidden('#update-bar'));
   ok('failing checks mark the card and chip', await evalJs(`document.querySelector('.card.ci-failing .chip.bad')?.textContent`) === 'main ● failing');
   ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /oldest 12d/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
   ok('release appears in the meta line', /release v2\.3\.0/.test(await text('.card.ci-failing .meta')), await text('.card.ci-failing .meta'));

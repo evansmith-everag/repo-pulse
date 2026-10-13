@@ -13,4 +13,9 @@ url="http://127.0.0.1:$PORT"
   elif command -v open >/dev/null 2>&1; then open "$url"
   fi
 ) >/dev/null 2>&1 &
-exec node server.js
+# Exit code 75 means "I installed an update, start me again".
+while :; do
+  node server.js
+  code=$?
+  [ "$code" -eq 75 ] || exit "$code"
+done

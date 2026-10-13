@@ -54,6 +54,8 @@
   .banner { border: 1px solid var(--bad); color: var(--bad); border-radius: var(--radius); padding: 10px 14px; font-size: .9rem; }
   .notice { border: 1px solid var(--line); color: var(--muted); border-radius: var(--radius); padding: 10px 14px; font-size: .9rem; }
   .notice.warn { border-color: var(--warn); color: var(--warn); font-weight: 500; }
+  .notice.accent { border-color: var(--accent); color: var(--fg); }
+  .notice .linkbtn { margin-left: 8px; }
   body.stale .repos, body.stale .feed { opacity: .55; }
 
   .repos { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 16px; }
@@ -201,6 +203,7 @@
       <span id="update-note" role="status" hidden>A newer version of this page is ready. <button class="linkbtn" id="reload-now" type="button">Reload</button></span>
     </div>
     <div class="notice" id="notice" role="status" hidden></div>
+    <div class="notice accent" id="update-bar" role="status" hidden></div>
     <div class="banner" id="error-banner" role="alert" hidden></div>
     <div class="repos" id="repos"><div class="empty">Loading…</div></div>
     <section class="feed velocity" id="velocity" aria-labelledby="velocity-title" hidden>
@@ -277,6 +280,16 @@
           <div class="note" id="save-note" role="status"></div>
           <p class="note bad" id="config-problem" hidden></p>
           <details id="config-path-wrap" hidden><summary>Where settings are saved</summary><p class="help"><code id="config-path"></code></p></details>
+        </div>
+        <div class="panel">
+          <h2>Updates</h2>
+          <p class="help" id="update-status">Checking…</p>
+          <div class="saverow">
+            <button class="secondary" id="update-check" type="button">Check now</button>
+            <button class="primary" id="update-install" type="button" hidden>Update now</button>
+          </div>
+          <p class="help" id="update-note" role="status"></p>
+          <p class="help">Checks the project's GitHub releases at startup and about once a month. Updating replaces the server and page files, keeps the old ones in <code>.previous</code>, and restarts.</p>
         </div>
         <div class="panel">
           <h2>This browser</h2>
@@ -436,7 +449,8 @@
   // "Live" means data is flowing: the stream is open and the last GitHub fetch worked.
   function setConnection() {
     const dot = $('conn-dot'), text = $('conn-text');
-    if (!connected) { dot.className = 'dot down'; text.textContent = "Can't reach the Repo Pulse server, retrying…"; }
+    if (!connected && expectRestart) { dot.className = 'dot warn'; text.textContent = 'Restarting after the update…'; }
+    else if (!connected) { dot.className = 'dot down'; text.textContent = "Can't reach the Repo Pulse server, retrying…"; }
     else if (snap?.tokenProblem) { dot.className = 'dot down'; text.textContent = 'Stopped: GitHub token problem'; }
     else if (snap?.error) { dot.className = 'dot warn'; text.textContent = 'Live, but the last refresh failed'; }
     else { dot.className = 'dot live'; text.textContent = 'Live'; }
@@ -492,6 +506,7 @@
     setConnection();
     drawUpdated();
     drawNotice();
+    drawUpdate();
     setTitle();
 
     const box = $('repos');
@@ -722,6 +737,71 @@
     return card;
   }
 
+  // ----- updates -----
+  // The server checks its own GitHub releases; the page offers the install and rides out the restart that follows.
+  let expectRestart = false, updateBusy = false;
+  function drawUpdate() {
+    const u = snap?.update, bar = $('update-bar');
+    if (!u) { bar.hidden = true; return; }
+    if (u.installing || expectRestart) {
+      bar.hidden = false;
+      bar.textContent = u.installed ? `Installed v${u.installed}. Restarting; this page reloads when the server is back.` : 'Updating: downloading and verifying the release…';
+    } else if (u.available) {
+      bar.hidden = false;
+      bar.replaceChildren(`Repo Pulse v${u.latest} is available (running v${snap.version}). `);
+      if (u.url) bar.append(extLink('Release notes', u.url, 'linkbtn'));
+      const b = el('button', 'linkbtn', u.container ? 'Pull the newer image' : 'Update now'); b.type = 'button';
+      b.disabled = Boolean(u.container);
+      b.onclick = installUpdate;
+      bar.append(b);
+    } else bar.hidden = true;
+    drawUpdatePanel();
+  }
+  async function installUpdate() {
+    if (updateBusy) return;
+    updateBusy = true;
+    const bar = $('update-bar'), note = $('update-note');
+    bar.hidden = false; bar.textContent = 'Updating: downloading and verifying the release…'; note.textContent = 'Updating…';
+    $('update-install').disabled = true;
+    try {
+      const res = await fetch('/api/update', { method: 'POST', headers: adminHeaders() });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      expectRestart = true;
+      bar.textContent = `Installed v${body.version}. Restarting; this page reloads when the server is back. If it is not back within a minute, start Repo Pulse again.`;
+      note.textContent = bar.textContent;
+      setConnection();
+    } catch (err) {
+      bar.textContent = `Update failed: ${err.message}`;
+      note.textContent = `Update failed: ${err.message}`;
+      if (/Admin token/.test(err.message)) showTab('settings');
+    } finally { updateBusy = false; $('update-install').disabled = false; }
+  }
+  function drawUpdatePanel() {
+    const u = snap?.update;
+    if (!u) return;
+    let text = `Repo Pulse v${snap.version}. `;
+    if (!u.enabled) text += 'Automatic update checks are off (UPDATE_CHECK=0).';
+    else if (!u.checkedAt) text += 'Not checked yet; it checks at startup and about once a month.';
+    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
+    if (u.container) text += ' Running in a container, so updates come from pulling the newer image.';
+    $('update-status').textContent = text;
+    $('update-check').hidden = !u.enabled;
+    $('update-install').hidden = !(u.enabled && u.available && !u.container && !u.installing && !expectRestart);
+  }
+  $('update-install').onclick = installUpdate;
+  $('update-check').onclick = async () => {
+    const note = $('update-note');
+    note.textContent = 'Checking…';
+    try {
+      const res = await fetch('/api/update/check', { method: 'POST', headers: adminHeaders() });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      if (snap) { snap.update = body; drawUpdate(); }
+      note.textContent = body.available ? `v${body.latest} is available.` : body.error ? `The check failed: ${body.error}` : `Up to date (v${body.current}).`;
+    } catch (err) { note.textContent = `Could not check: ${err.message}`; }
+  };
+
   // ----- velocity table -----
   const hoursText = (h) => h == null ? '—' : h < 1 ? '<1h' : h < 48 ? `${Math.round(h)}h` : `${(h / 24).toFixed(1).replace(/\.0$/, '')}d`;
   // "63 ↑12": the value with its change against the previous week; up is good for throughput columns.
@@ -939,6 +1019,7 @@
       $('poll').value = keptPoll || cfg.pollSeconds;
     }
     drawPrefs();
+    drawUpdatePanel();
     drawSelected();
     const owner = $('org').value.trim();
     if (!owner) {

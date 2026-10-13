@@ -89,10 +89,21 @@ The token is read once at startup, so restart after rotating it.
 - **Push to browser:** open pages get each new snapshot over server-sent events (`/api/events`). If the page loses the server it says so and reconnects on its own.
 - **Webhooks (optional):** set `WEBHOOK_SECRET` and point a GitHub webhook (content type `application/json`; events: push, issues, pull requests, pull request reviews, check suites, workflow runs, statuses, releases) at `https://<host>/webhook`. The server checks the signature, ignores replayed delivery ids, and refreshes within a few seconds. Webhooks need the server to be reachable from GitHub, so they only work on a web server, not on localhost.
 
+## Updates
+
+The server checks this project's GitHub releases about ten seconds after it starts and then about once a month, and says so in the console. When a newer release exists, the dashboard shows a bar with the version, a link to the release notes and an **Update now** button; the Settings tab has an **Updates** panel with the same plus **Check now**.
+
+Updating downloads the release zip and `SHA256SUMS` from GitHub, verifies the checksum, replaces `server.js`, `public/index.html`, `package.json`, `README.md` and `LICENSE` in place (the previous copies go to `.previous/`), and exits with code 75. `start.cmd` and `start.sh` start the server again on that code, systemd does with `Restart=on-failure`, and Docker does with `--restart unless-stopped`. Open dashboards show "Restarting after the update" and reload themselves when the new version is up. If you ran `node server.js` by hand, start it again. The launcher scripts are never replaced by an update, since Windows reads a running batch file as it goes; download a release zip when you want new launchers.
+
+Installing is an administrative action: it needs the admin token when `ADMIN_TOKEN` is set, and otherwise only works from the machine the server runs on. It refuses inside the Docker image (pull the newer image instead) and when the install folder isn't writable, which is the case under the systemd unit above unless you add `ReadWritePaths=/opt/repo-pulse`. To roll back, copy the files from `.previous/` over the current ones and restart.
+
+Set `UPDATE_CHECK=0` to turn the checks off; the only request they make is to GitHub's releases API for this repository. A fork can point them at its own releases with `UPDATE_REPO=owner/name` or the `repository` field in `package.json`.
+
 ## Endpoints for scripts
 
 - `GET /api/snapshot` returns the same JSON the page receives, with an `ETag`; send `If-None-Match` to get a `304` when nothing changed.
 - `GET /healthz` returns `200 {ok: true, …}` when the token works and data has been fetched, otherwise `503`. Use it for Docker health checks or uptime monitors.
+- `GET /api/update` returns the running version and the latest release seen; `POST /api/update/check` checks now; `POST /api/update` installs the latest release (admin token when set, otherwise from the server's own machine only).
 
 ## Environment
 
@@ -109,6 +120,9 @@ The token is read once at startup, so restart after rotating it.
 | `REPO_PULSE_CONFIG` | `./config.json` | Config file location |
 | `REPO_PULSE_CACHE` | `snapshot.json` next to the config | Where the last fetched data is kept |
 | `REPO_PULSE_FIXTURE` | none | A JSON file of canned rows served instead of GitHub (used by the tests; see `test/fixture.json`) |
+| `UPDATE_CHECK` | on | Set `0` to stop checking GitHub releases for a newer version |
+| `UPDATE_REPO` | from `package.json` | `owner/name` whose releases to check, for forks |
+| `REPO_PULSE_CONTAINER` | set by the Dockerfile | Tells the server it is an image, so "Update now" says to pull instead |
 
 `config.json` can be edited by hand while the server is stopped. If it can't be parsed, the server starts with defaults in memory, leaves the file alone, and shows the problem in the Settings tab; the next save rewrites the file.
 

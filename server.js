@@ -2,15 +2,35 @@
 // Polls the GitHub GraphQL API, optionally accepts webhooks for instant refresh,
 // and pushes snapshots to browsers over server-sent events.
 import http from 'node:http';
-import { readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename, stat, mkdir, copyFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SERVER_PATH = fileURLToPath(import.meta.url);
 const ROOT = path.dirname(SERVER_PATH);
 const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
+
+// Self-update: the project's GitHub releases are checked at startup and about monthly; "Update now" downloads the
+// release zip, verifies it against SHA256SUMS, swaps the files in place (keeping the old ones in .previous) and exits
+// with code 75, which the launchers, systemd and Docker treat as "restart me".
+let PKG = {};
+try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
+const VERSION = PKG.version || '0.0.0';
+const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
+const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0' && Boolean(UPDATE_REPO);
+const UPDATE_API = process.env.UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+const UPDATE_INTERVAL_MS = 30 * 864e5;
+const UPDATE_STARTUP_DELAY_MS = Number(process.env.UPDATE_CHECK_DELAY_MS || 10_000);
+const UPDATE_MAX_ZIP = 30_000_000;
+const IN_CONTAINER = process.env.REPO_PULSE_CONTAINER === '1';
+const RESTART_EXIT_CODE = 75;
+// Files a release may replace, by their path inside the zip. The launchers are left alone on purpose: cmd.exe reads a
+// running batch file incrementally, so rewriting start.cmd underneath it would misbehave.
+const UPDATABLE = { 'repo-pulse/server.js': 'server.js', 'repo-pulse/public/index.html': 'public/index.html', 'repo-pulse/package.json': 'package.json', 'repo-pulse/README.md': 'README.md', 'repo-pulse/LICENSE': 'LICENSE' };
+const REQUIRED_IN_RELEASE = ['server.js', 'public/index.html', 'package.json'];
 const CONFIG_PATH = process.env.REPO_PULSE_CONFIG || path.join(ROOT, 'config.json');
 // The last good snapshot is kept on disk so a restart shows data immediately instead of "Loading…".
 const CACHE_PATH = process.env.REPO_PULSE_CACHE || path.join(path.dirname(CONFIG_PATH), 'snapshot.json');
@@ -72,6 +92,8 @@ let pendingReason = null;
 let gapTimer = null;
 const clients = new Set();
 const seenDeliveries = []; // recent webhook delivery ids, so a captured delivery cannot be replayed
+let update = { enabled: UPDATE_CHECK, repo: UPDATE_REPO, current: VERSION, latest: null, available: false, url: null, publishedAt: null, notes: null, checkedAt: null, error: null, installing: false, installed: null, zipUrl: null, sumsUrl: null, zipName: null };
+let updateTimer = null;
 
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
 const warn = (msg) => console.warn(`${new Date().toISOString()} ${msg}`);
@@ -551,6 +573,143 @@ async function fetchOrgRepos(org, force = false) {
   return orgRepos;
 }
 
+// ---------- self-update ----------
+
+const semver = (s) => (String(s).match(/^v?(\d+)\.(\d+)\.(\d+)/) || [0, 0, 0, 0]).slice(1, 4).map(Number);
+const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+
+async function checkForUpdate(reason) {
+  if (!UPDATE_CHECK) return update;
+  try {
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'repo-pulse' };
+    if (token && !FIXTURE_PATH) headers.Authorization = `bearer ${token}`; // optional; raises the unauthenticated limit
+    const res = await fetch(UPDATE_API, { headers, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) throw new Error(`GitHub returned ${res.status} ${res.statusText}`);
+    const rel = await res.json();
+    const latest = String(rel.tag_name || '').replace(/^v/, '');
+    const zip = (rel.assets || []).find((a) => /^repo-pulse-v[\d.]+\.zip$/.test(a.name));
+    const sums = (rel.assets || []).find((a) => a.name === 'SHA256SUMS');
+    update = {
+      ...update, latest, available: newer(latest, VERSION) && Boolean(zip && sums), url: rel.html_url || null, publishedAt: rel.published_at || null,
+      notes: String(rel.body || '').slice(0, 4000), zipUrl: zip?.browser_download_url || null, sumsUrl: sums?.browser_download_url || null, zipName: zip?.name || null,
+      checkedAt: new Date().toISOString(), error: null,
+    };
+    log(update.available ? `update available: v${latest} (running v${VERSION}); install from Settings or POST /api/update` : `up to date at v${VERSION} (checked ${reason})`);
+  } catch (err) {
+    update = { ...update, checkedAt: new Date().toISOString(), error: err.message };
+    warn(`update check failed (${reason}): ${err.message}`);
+  }
+  broadcast('snapshot', publicSnapshot());
+  return update;
+}
+
+function scheduleUpdateChecks() {
+  if (!UPDATE_CHECK) return;
+  setTimeout(() => checkForUpdate('at startup'), UPDATE_STARTUP_DELAY_MS).unref();
+  // setTimeout cannot wait a month in one go, so a six-hourly tick checks whether a month has passed.
+  updateTimer = setInterval(() => {
+    const last = update.checkedAt ? new Date(update.checkedAt).getTime() : 0;
+    if (Date.now() - last >= UPDATE_INTERVAL_MS) checkForUpdate('monthly');
+  }, 6 * 3600e3).unref();
+}
+
+function publicUpdate() {
+  const { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed } = update;
+  return { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed, container: IN_CONTAINER };
+}
+
+// Installing an update rewrites the server's own code, so it is for administrators: the admin token when one is set,
+// otherwise only clients on this machine.
+const canAdminister = (req) => (ADMIN_TOKEN ? authorized(req) : isLoopbackClient(req));
+
+async function download(url, maxBytes) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'repo-pulse' }, signal: AbortSignal.timeout(90_000) });
+  if (!res.ok) throw new Error(`download of ${url} failed: ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > maxBytes) throw new Error(`download of ${url} is larger than expected (${buf.length} bytes)`);
+  return buf;
+}
+
+// A minimal reader for the release zip: stored and deflated entries, sizes from the central directory, CRC checked.
+const CRC_TABLE = new Uint32Array(256).map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function unzip(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('the download is not a zip file');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const files = [];
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('zip central directory is damaged');
+    const method = buf.readUInt16LE(p + 10), crc = buf.readUInt32LE(p + 16), csize = buf.readUInt32LE(p + 20), usize = buf.readUInt32LE(p + 24);
+    const nlen = buf.readUInt16LE(p + 28), elen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32), local = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nlen);
+    p += 46 + nlen + elen + clen;
+    if (name.endsWith('/')) continue;
+    if (buf.readUInt32LE(local) !== 0x04034b50) throw new Error(`zip entry ${name} is damaged`);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.subarray(start, start + csize);
+    const data = method === 0 ? raw : method === 8 ? inflateRawSync(raw) : null;
+    if (!data) throw new Error(`zip entry ${name} uses unsupported compression ${method}`);
+    if (data.length !== usize || crc32(data) !== crc) throw new Error(`zip entry ${name} failed its integrity check`);
+    files.push({ name, data });
+  }
+  return files;
+}
+
+async function installUpdate() {
+  const refuse = (msg) => Object.assign(new Error(msg), { status: 409 });
+  if (!UPDATE_CHECK) throw refuse('Update checks are off (UPDATE_CHECK=0).');
+  if (update.installing) throw refuse('An update is already being installed.');
+  if (!update.checkedAt) await checkForUpdate('before install');
+  if (!update.available) throw refuse(update.latest ? `Already up to date (v${VERSION}).` : 'No release found to install.');
+  if (IN_CONTAINER) throw refuse(`Running in a container: pull the image for v${update.latest} instead.`);
+  try { await writeFile(path.join(ROOT, '.write-test'), ''); await unlink(path.join(ROOT, '.write-test')); }
+  catch { throw refuse(`The install folder ${ROOT} is not writable by this process; download the release zip instead.`); }
+  update = { ...update, installing: true, error: null };
+  broadcast('snapshot', publicSnapshot());
+  try {
+    log(`downloading ${update.zipName} for v${update.latest}`);
+    const [zip, sums] = await Promise.all([download(update.zipUrl, UPDATE_MAX_ZIP), download(update.sumsUrl, 10_000)]);
+    const expected = sums.toString('utf8').split('\n').map((l) => l.trim().split(/\s+/)).find((parts) => parts[1]?.replace(/^\*/, '') === update.zipName)?.[0];
+    const actual = createHash('sha256').update(zip).digest('hex');
+    if (!expected) throw new Error(`SHA256SUMS has no entry for ${update.zipName}`);
+    if (expected.toLowerCase() !== actual) throw new Error('the downloaded zip does not match SHA256SUMS');
+    const files = unzip(zip).filter((f) => UPDATABLE[f.name]).map((f) => ({ target: UPDATABLE[f.name], data: f.data }));
+    for (const need of REQUIRED_IN_RELEASE) if (!files.some((f) => f.target === need)) throw new Error(`the release zip has no ${need}`);
+    const newPkg = JSON.parse(files.find((f) => f.target === 'package.json').data.toString('utf8'));
+    if (!newer(newPkg.version, VERSION)) throw new Error(`the zip contains v${newPkg.version}, not newer than v${VERSION}`);
+    const backup = path.join(ROOT, '.previous');
+    await mkdir(path.join(backup, 'public'), { recursive: true });
+    for (const f of files) {
+      const target = path.join(ROOT, f.target);
+      await copyFile(target, path.join(backup, f.target)).catch(() => {});
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeAtomic(target, f.data);
+    }
+    update = { ...update, installing: false, installed: newPkg.version, available: false };
+    log(`installed v${newPkg.version} (previous files kept in ${backup}); exiting with code ${RESTART_EXIT_CODE} so the launcher restarts`);
+    broadcast('snapshot', publicSnapshot());
+    setTimeout(() => {
+      clearTimeout(pollTimer);
+      for (const res of clients) res.end();
+      server.close();
+      process.exit(RESTART_EXIT_CODE);
+    }, 400).unref();
+    return { ok: true, version: newPkg.version, restarting: true };
+  } catch (err) {
+    update = { ...update, installing: false, error: err.message };
+    warn(`update failed: ${err.message}`);
+    broadcast('snapshot', publicSnapshot());
+    throw Object.assign(new Error(`Update failed: ${err.message}`), { status: 502 });
+  }
+}
+
 // ---------- refresh loop ----------
 
 // One refresh runs at a time. A request that arrives mid-flight is queued and runs right after, so a settings save or
@@ -624,12 +783,15 @@ function publicSnapshot() {
     tokenSource,
     viewer,
     build: buildId(),
+    version: VERSION,
+    update: publicUpdate(),
   };
 }
 
 function publicConfig(req) {
   return {
     ...config,
+    version: VERSION,
     maxRepos: MAX_REPOS,
     maxLabels: MAX_LABELS,
     pollOptions: POLL_OPTIONS,
@@ -768,6 +930,19 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/config') {
       return send(res, 200, publicConfig(req));
     }
+    if (req.method === 'GET' && url.pathname === '/api/update') {
+      return send(res, 200, { ...publicUpdate(), notes: update.notes, canAdminister: canAdminister(req) });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/update/check') {
+      if (!canAdminister(req)) return send(res, ADMIN_TOKEN ? 401 : 403, { error: ADMIN_TOKEN ? 'Admin token missing or wrong.' : 'Only this machine may check for updates.' });
+      if (!UPDATE_CHECK) return send(res, 409, { error: 'Update checks are off (UPDATE_CHECK=0).' });
+      await checkForUpdate('on request');
+      return send(res, 200, { ...publicUpdate(), notes: update.notes, canAdminister: true });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/update') {
+      if (!canAdminister(req)) return send(res, ADMIN_TOKEN ? 401 : 403, { error: ADMIN_TOKEN ? 'Admin token missing or wrong.' : 'Only this machine may install updates.' });
+      return send(res, 200, await installUpdate());
+    }
     if (req.method === 'POST' && url.pathname === '/api/config') {
       if (!authorized(req)) return send(res, 401, { error: 'Admin token missing or wrong.' });
       if (!isJson(req)) return send(res, 415, { error: 'Send settings as application/json.' });
@@ -853,8 +1028,10 @@ await whoAmI();
 if (tokenProblem) warn(tokenProblem);
 else log(`token: ${tokenSource === 'env' ? 'GITHUB_TOKEN environment variable' : tokenSource === 'gh' ? 'GitHub CLI login (gh auth token)' : tokenSource}${viewer ? ` as @${viewer}` : ''}`);
 schedulePolling();
+scheduleUpdateChecks();
 refresh('startup');
 server.listen(PORT, HOST, () => {
-  log(`Repo Pulse ${buildId()} on http://${HOST}:${PORT}  (config: ${CONFIG_PATH})`);
+  log(`Repo Pulse v${VERSION} (${buildId()}) on http://${HOST}:${PORT}  (config: ${CONFIG_PATH})`);
   if (WEBHOOK_SECRET) log('Webhooks enabled at POST /webhook');
+  if (!UPDATE_CHECK) log('Update checks are off');
 });
