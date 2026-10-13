@@ -26,7 +26,12 @@
         ]
       },
       "commits7d": 18,
+      "commitsPrev7d": 12,
       "week": { "total": 18, "days": [1, 4, 0, 6, 2, 3, 2], "sampled": false },
+      "contributors": { "count": 3, "botCommits": 2, "top": { "name": "casey", "share": 0.5 } },
+      "alerts": 2,
+      "metrics": { "available": true, "mergedPrev7d": 3, "prsOpened7d": 6, "issuesOpened7d": 9, "issuesClosed7d": 4, "stalePrs": 2, "staleDays": 14, "cycleHours": 20, "firstReviewHours": 3.5, "mergedSample": 4, "reviewedSample": 3 },
+      "ciRuns": { "branch": "main", "runs7d": 20, "failed7d": 4, "failing": ["Nightly"], "lastFailure": { "name": "Nightly", "url": "https://github.com/example/alpha/actions/runs/1", "at": "2026-10-13T06:00:00Z" }, "truncated": false },
       "lastCommitAt": "2026-10-13T08:00:00Z",
       "commits": [
         { "sha": "a1b2c3d", "message": "feat: do the thing", "author": "casey", "committedAt": "2026-10-13T08:00:00Z", "url": "https://github.com/example/alpha/commit/a1b2c3d" },
@@ -48,7 +53,12 @@
       "merged7d": 0,
       "prs": { "total": 0, "sampled": false, "awaiting": 0, "approved": 0, "changes": 0, "drafts": 0, "oldestAwaitingAt": null, "waiting": [], "newest": [] },
       "commits7d": 0,
+      "commitsPrev7d": 0,
       "week": { "total": 0, "days": [0, 0, 0, 0, 0, 0, 0], "sampled": false },
+      "contributors": { "count": 0, "botCommits": 0, "top": null },
+      "alerts": null,
+      "metrics": { "available": true, "mergedPrev7d": 0, "prsOpened7d": 0, "issuesOpened7d": 0, "issuesClosed7d": 0, "stalePrs": 0, "staleDays": 14, "cycleHours": null, "firstReviewHours": null, "mergedSample": 0, "reviewedSample": 0 },
+      "ciRuns": null,
       "lastCommitAt": "2026-08-01T08:00:00Z",
       "commits": [
         { "sha": "d4e5f6a", "message": "docs: quiet repo", "author": "casey", "committedAt": "2026-08-01T08:00:00Z", "url": "https://github.com/example/beta/commit/d4e5f6a" }
@@ -72,7 +82,12 @@
         { "number": 9, "title": "Backport fix", "url": "https://github.com/other/delta/pull/9", "createdAt": "2026-10-11T09:00:00Z", "author": "casey", "draft": false, "decision": "review", "outside": false, "firstTime": false }
       ], "newest": [] },
       "commits7d": 3,
+      "commitsPrev7d": 5,
       "week": { "total": 3, "days": [0, 0, 1, 0, 2, 0, 0], "sampled": false },
+      "contributors": { "count": 1, "botCommits": 0, "top": { "name": "casey", "share": 1 } },
+      "alerts": 0,
+      "metrics": { "available": true, "mergedPrev7d": 2, "prsOpened7d": 1, "issuesOpened7d": 1, "issuesClosed7d": 1, "stalePrs": 0, "staleDays": 14, "cycleHours": 60, "firstReviewHours": 30, "mergedSample": 2, "reviewedSample": 2 },
+      "ciRuns": { "branch": "release/2.x", "runs7d": 6, "failed7d": 0, "failing": [], "lastFailure": null, "truncated": false },
       "lastCommitAt": "2026-10-11T08:00:00Z",
       "commits": [
         { "sha": "e5f6a7b", "message": "fix: backport", "author": "casey", "committedAt": "2026-10-11T08:00:00Z", "url": "https://github.com/other/delta/commit/e5f6a7b" }

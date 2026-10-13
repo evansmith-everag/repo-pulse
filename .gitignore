@@ -1,6 +1,8 @@
 # Your own settings (organization, picked repositories) and the last fetched data live here. Never commit them.
 config.json
 snapshot.json
+# Files from before the last self-update.
+.previous/
 
 node_modules/
 dist/

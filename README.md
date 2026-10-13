@@ -2,6 +2,24 @@
 
 A live dashboard for up to three GitHub repositories under any organization or user your token can see. It answers, at a glance, whether code is moving and whether anything is waiting on you: pull requests that need review, failing checks on the default branch, what shipped last, and what landed in the past week. It's one Node.js file plus one HTML file, no dependencies, no build step, and it runs on Windows, macOS and Linux.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/cards-dark.png">
+  <img src="docs/images/cards-light.png" width="1280" alt="Repo Pulse dashboard watching microsoft/vscode, react/react and vercel/next.js: each card shows the checks chip for the watched branch, pull requests that need review with the age of the oldest, commits and merges in the last seven days with a seven-day shape, the latest release, issue counts, and the three oldest open pull requests with their review state.">
+</picture>
+
+The velocity table under the cards compares this week with last, per repository and in total:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/velocity-dark.png">
+  <img src="docs/images/velocity-light.png" width="1280" alt="The Velocity table: merged and opened pull requests with week-over-week arrows, median cycle time and first-review time, commits, people and top-contributor share, issues opened and closed, stale pull requests, CI failures out of total runs with the failing workflow named, and security alerts, with a totals row.">
+</picture>
+
+TV mode fills a wall display with the cards and the latest commits:
+
+<img src="docs/images/tv.png" width="1280" alt="TV mode at 1920 by 1080: three large cards with big numbers for needs review, commits and merged, the checks chip, release, counts, the oldest open pull requests and six recent commits each, with the navigation and commit feed hidden.">
+
+The screenshots show public repositories; the full dashboard in [dark](docs/images/dashboard-dark.png) and [light](docs/images/dashboard-light.png), and the [Settings tab](docs/images/settings.png), are in `docs/images`. There is also a [product page](https://evansmith-everag.github.io/repo-pulse/) built from the same files.
+
 ## Download and run
 
 1. Install [Node.js](https://nodejs.org) 18 or newer.
@@ -42,6 +60,24 @@ Each repository card:
 - **Oldest open:** the three oldest non-draft PRs with author, review state, and a marker for first-time or community contributors.
 - **Quiet** (no commit in 30 days), **Slowing** (8 to 30 days), **Archived** or **Unavailable** chips when they apply. Active repos get no chip; silence is the good state.
 
+When checks failed on the watched branch this week, the card adds a line such as `checks 7d: 42 passed · 6 failed · failing now: Nightly`, with the failure count linking to the latest failed run. Open Dependabot security alerts appear on the card too when the token may read them.
+
+### Velocity
+
+Below the cards, a **Velocity · last 7 days** table gives the numbers a manager asks for, computed fresh from GitHub on every poll (nothing is stored, so a new install shows a full week immediately). Arrows compare with the seven days before. Per repository, with a totals row:
+
+- **Merged** and **Opened** pull requests.
+- **Cycle time:** median time from opening to merge for the pull requests merged this week.
+- **First review:** median time from opening to the first submitted review, for merged pull requests that got one.
+- **Commits** on the watched branch.
+- **People:** how many people committed, and the share of commits by the busiest one; 75 percent or more is highlighted.
+- **Issues +/−:** opened and closed, with the net change to the backlog.
+- **Stale PRs:** open, non-draft pull requests older than 14 days.
+- **CI failed:** failed out of total GitHub Actions runs on the watched branch, followed by any workflow whose latest run failed.
+- **Alerts:** open Dependabot security alerts.
+
+Bots (`dependabot`, `renovate`, anything ending in `[bot]` or `-bot`) are left out of the people column and the two medians, because a dependency bot is otherwise the "top contributor" and an auto-merge bot has a one-minute cycle time. Hover a column heading for its definition. The table is hidden in TV mode and can be turned off per browser (or with the `v` key).
+
 Below the cards, **Recent commits** merges up to five of the latest commits per repository, newest first. New rows are tagged "new" until the next update, and numbers that changed show their delta (for example `↑2`) until then.
 
 The **status strip** shows whether the page is live, "Updated 28s ago" with the exact local time beside it, the poll interval, the GitHub API budget left this hour, and Pause and Refresh buttons. If the data is older than two poll intervals an amber bar says how old it is and the cards dim. If GitHub rejects the token the dot turns red and a banner says what to do. If GitHub rate-limits the server the bar says when polling resumes.
@@ -59,22 +95,33 @@ The Settings tab has a "This browser" panel for preferences that live in the bro
 The server looks for a token in this order: `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token` from the GitHub CLI. It never shows the token anywhere, but it does tell you which source and which account are in use, in the console at startup, in the setup steps, and in the Settings tab.
 
 - **Public repositories only:** any token works; a classic token needs no scopes, a fine-grained token needs only the default public read access.
-- **Private repositories:** a classic token with the `repo` scope, or a fine-grained token with read access to Contents, Issues, Pull requests and Metadata for the repositories you pick. Fine-grained tokens expire; when one does, the dashboard stops polling and says so.
+- **Private repositories:** a classic token with the `repo` scope, or a fine-grained token with read access to Contents, Issues, Pull requests and Metadata for the repositories you pick. Add Actions read access for the CI column and Dependabot alerts read access for the Alerts column; without them those columns show a dash. Fine-grained tokens expire; when one does, the dashboard stops polling and says so.
 - The `gh` login is convenient but usually carries more scope than this tool needs. If that bothers you, create a read-only fine-grained token and set `GITHUB_TOKEN`.
 
 The token is read once at startup, so restart after rotating it.
 
 ## How it stays live
 
-- **Polling:** one GraphQL request per poll for all selected repositories, every `pollSeconds` (default 60; the Settings dropdown offers 15 s to 1 hour). Each poll costs about 1 point of the token's 5,000-points-per-hour GraphQL budget; the status strip shows what's left. GitHub answers in about 3 to 5 seconds for busy repositories.
+- **Polling:** every `pollSeconds` (default 60; the Settings dropdown offers 15 s to 1 hour) the server makes two GraphQL requests in parallel, one for the cards and one for the velocity searches, plus one REST call per repository for its Actions runs. Together they cost about 2 points of the token's 5,000-points-per-hour GraphQL budget and one call per repository from the separate 5,000-per-hour REST budget; the status strip shows the GraphQL points left. GitHub answers in about 4 to 6 seconds for busy repositories. If the velocity request or an Actions call fails, only those cells go blank; the cards still update.
 - **Backoff:** after a failed poll the interval doubles (with jitter) up to 30 minutes. A rate-limit answer pauses polling until the time GitHub gives. A rejected token stops polling until you restart with a new one; "Refresh now" still retries.
 - **Push to browser:** open pages get each new snapshot over server-sent events (`/api/events`). If the page loses the server it says so and reconnects on its own.
 - **Webhooks (optional):** set `WEBHOOK_SECRET` and point a GitHub webhook (content type `application/json`; events: push, issues, pull requests, pull request reviews, check suites, workflow runs, statuses, releases) at `https://<host>/webhook`. The server checks the signature, ignores replayed delivery ids, and refreshes within a few seconds. Webhooks need the server to be reachable from GitHub, so they only work on a web server, not on localhost.
+
+## Updates
+
+The server checks this project's GitHub releases about ten seconds after it starts and then about once a month, and says so in the console. When a newer release exists, the dashboard shows a bar with the version, a link to the release notes and an **Update now** button; the Settings tab has an **Updates** panel with the same plus **Check now**.
+
+Updating downloads the release zip and `SHA256SUMS` from GitHub, verifies the checksum, replaces `server.js`, `public/index.html`, `package.json`, `README.md` and `LICENSE` in place (the previous copies go to `.previous/`), and exits with code 75. `start.cmd` and `start.sh` start the server again on that code, systemd does with `Restart=on-failure`, and Docker does with `--restart unless-stopped`. Open dashboards show "Restarting after the update" and reload themselves when the new version is up. If you ran `node server.js` by hand, start it again. The launcher scripts are never replaced by an update, since Windows reads a running batch file as it goes; download a release zip when you want new launchers.
+
+Installing is an administrative action: it needs the admin token when `ADMIN_TOKEN` is set, and otherwise only works from the machine the server runs on. It refuses inside the Docker image (pull the newer image instead), inside a git checkout (`git pull` instead), and when the install folder isn't writable, which is the case under the systemd unit above unless you add `ReadWritePaths=/opt/repo-pulse`. To roll back, copy the files from `.previous/` over the current ones and restart.
+
+Set `UPDATE_CHECK=0` to turn the checks off; the only request they make is to GitHub's releases API for this repository. A fork can point them at its own releases with `UPDATE_REPO=owner/name` or the `repository` field in `package.json`.
 
 ## Endpoints for scripts
 
 - `GET /api/snapshot` returns the same JSON the page receives, with an `ETag`; send `If-None-Match` to get a `304` when nothing changed.
 - `GET /healthz` returns `200 {ok: true, …}` when the token works and data has been fetched, otherwise `503`. Use it for Docker health checks or uptime monitors.
+- `GET /api/update` returns the running version and the latest release seen; `POST /api/update/check` checks now; `POST /api/update` installs the latest release (admin token when set, otherwise from the server's own machine only).
 
 ## Environment
 
@@ -91,6 +138,9 @@ The token is read once at startup, so restart after rotating it.
 | `REPO_PULSE_CONFIG` | `./config.json` | Config file location |
 | `REPO_PULSE_CACHE` | `snapshot.json` next to the config | Where the last fetched data is kept |
 | `REPO_PULSE_FIXTURE` | none | A JSON file of canned rows served instead of GitHub (used by the tests; see `test/fixture.json`) |
+| `UPDATE_CHECK` | on | Set `0` to stop checking GitHub releases for a newer version |
+| `UPDATE_REPO` | from `package.json` | `owner/name` whose releases to check, for forks |
+| `REPO_PULSE_CONTAINER` | set by the Dockerfile | Tells the server it is an image, so "Update now" says to pull instead |
 
 `config.json` can be edited by hand while the server is stopped. If it can't be parsed, the server starts with defaults in memory, leaves the file alone, and shows the problem in the Settings tab; the next save rewrites the file.
 
@@ -142,7 +192,7 @@ The image listens on all interfaces inside the container (there is no loopback t
 
 Anyone who can reach the server sees the dashboard data for the chosen repositories, fetched with the server's token. With `ADMIN_TOKEN` set, changing settings and browsing an owner's full repository list (names, descriptions, push times for every repository the token can see) need the token; without it, anyone who can reach the page can do both.
 
-When bound to localhost (the default) the server rejects requests whose `Host` header isn't a loopback address or in `ALLOWED_HOSTS`, and it rejects state-changing requests that a browser marks as cross-site. That keeps other websites open in your browser from reading or changing anything. Responses carry a strict content security policy and the page uses system fonts, so the only network traffic is to `api.github.com`.
+When bound to localhost (the default) the server rejects requests whose `Host` header isn't a loopback address or in `ALLOWED_HOSTS`, and it rejects state-changing requests that a browser marks as cross-site. That keeps other websites open in your browser from reading or changing anything. Responses carry a strict content security policy and the page uses system fonts, so the only network traffic is to GitHub: `api.github.com` for polling and update checks, plus GitHub's release download when you press Update now.
 
 ## Tests
 

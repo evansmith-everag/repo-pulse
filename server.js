@@ -2,15 +2,35 @@
 // Polls the GitHub GraphQL API, optionally accepts webhooks for instant refresh,
 // and pushes snapshots to browsers over server-sent events.
 import http from 'node:http';
-import { readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename, stat, mkdir, copyFile, unlink } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { inflateRawSync } from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SERVER_PATH = fileURLToPath(import.meta.url);
 const ROOT = path.dirname(SERVER_PATH);
 const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
+
+// Self-update: the project's GitHub releases are checked at startup and about monthly; "Update now" downloads the
+// release zip, verifies it against SHA256SUMS, swaps the files in place (keeping the old ones in .previous) and exits
+// with code 75, which the launchers, systemd and Docker treat as "restart me".
+let PKG = {};
+try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
+const VERSION = PKG.version || '0.0.0';
+const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
+const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0' && Boolean(UPDATE_REPO);
+const UPDATE_API = process.env.UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+const UPDATE_INTERVAL_MS = 30 * 864e5;
+const UPDATE_STARTUP_DELAY_MS = Number(process.env.UPDATE_CHECK_DELAY_MS || 10_000);
+const UPDATE_MAX_ZIP = 30_000_000;
+const IN_CONTAINER = process.env.REPO_PULSE_CONTAINER === '1';
+const RESTART_EXIT_CODE = 75;
+// Files a release may replace, by their path inside the zip. The launchers are left alone on purpose: cmd.exe reads a
+// running batch file incrementally, so rewriting start.cmd underneath it would misbehave.
+const UPDATABLE = { 'repo-pulse/server.js': 'server.js', 'repo-pulse/public/index.html': 'public/index.html', 'repo-pulse/package.json': 'package.json', 'repo-pulse/README.md': 'README.md', 'repo-pulse/LICENSE': 'LICENSE' };
+const REQUIRED_IN_RELEASE = ['server.js', 'public/index.html', 'package.json'];
 const CONFIG_PATH = process.env.REPO_PULSE_CONFIG || path.join(ROOT, 'config.json');
 // The last good snapshot is kept on disk so a restart shows data immediately instead of "Loading…".
 const CACHE_PATH = process.env.REPO_PULSE_CACHE || path.join(path.dirname(CONFIG_PATH), 'snapshot.json');
@@ -30,6 +50,9 @@ const WEEK_SAMPLE = 100; // commit dates fetched for the 7-day sparkline; busier
 // The oldest open PRs. GitHub answers a 3-repo query in about 4 s at 10, 6 s at 20 and times out (502) near 30
 // with per-PR check status, so this stays modest and per-PR checks are not requested at all.
 const PRS_PER_REPO = 15;
+const STALE_PR_DAYS = 14; // an open, non-draft PR older than this counts as stale
+const MERGED_SAMPLE = 30; // merged PRs sampled per repo for cycle-time and first-review medians
+const CI_RUNS_PAGE = 50; // workflow runs fetched per repo per poll (REST, one call per repo)
 const ORG_LIST_TTL_MS = 60 * 60 * 1000;
 const ORG_LIST_MAX_PAGES = 10; // 1,000 repositories; the picker caps at 300 rows and has an add-by-name box anyway
 const FETCH_TIMEOUT_MS = 20_000;
@@ -69,6 +92,8 @@ let pendingReason = null;
 let gapTimer = null;
 const clients = new Set();
 const seenDeliveries = []; // recent webhook delivery ids, so a captured delivery cannot be replayed
+let update = { enabled: UPDATE_CHECK, repo: UPDATE_REPO, current: VERSION, latest: null, available: false, url: null, publishedAt: null, notes: null, checkedAt: null, error: null, installing: false, installed: null, zipUrl: null, sumsUrl: null, zipName: null };
+let updateTimer = null;
 
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
 const warn = (msg) => console.warn(`${new Date().toISOString()} ${msg}`);
@@ -258,21 +283,31 @@ async function whoAmI() {
   }
 }
 
-// One request per poll for every repository: counts, the branch head's CI state, the latest release, the oldest open
-// PRs with their review state, recent commits, commit dates for the week's shape, per-label issue counts, and two
-// searches (merged in 7 days, untriaged issues).
+// Each poll makes two GraphQL requests in parallel plus one REST call per repository:
+//  - the core query: counts, the branch head's CI state, the latest release, the oldest open PRs with their review
+//    state, recent commits, commit dates and authors for the week's shape, last week's commit count, per-label issue
+//    counts, open security alerts (when the token may see them), merged-in-7-days and untriaged searches;
+//  - the velocity query: searches for last week's merges, PRs opened, issues opened and closed, stale PRs, and a
+//    sample of this week's merged PRs with their review timing;
+//  - GitHub Actions runs on the watched branch, for CI failures.
+// Keeping them separate keeps each inside GitHub's ~10 s GraphQL budget; a failing velocity or CI call only blanks
+// those cells.
 async function fetchRepoData(org, specs, labels) {
   if (!specs.length) return { repos: [], rateLimit: snapshot.rateLimit || null };
   const parsed = specs.map((s) => parseSpec(s, org));
   if (FIXTURE_PATH) return fetchFixture(parsed);
-  const since = new Date(Date.now() - 7 * 864e5).toISOString();
-  const sinceDay = since.slice(0, 10);
+  const now = Date.now();
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const since = new Date(now - 7 * 864e5).toISOString();
+  const since14 = new Date(now - 14 * 864e5).toISOString();
+  const d7 = day(now - 7 * 864e5), d8 = day(now - 8 * 864e5), d14 = day(now - 14 * 864e5), dStale = day(now - STALE_PR_DAYS * 864e5);
   const labelFields = labels.map((_, j) => `lab${j}: issues(states: OPEN, labels: $lab${j}) { totalCount }`).join(' ');
   const fields = parsed.map((p, i) => `
     r${i}: repository(owner: $o${i}, name: $n${i}) {
       name nameWithOwner url isArchived
       issues(states: OPEN) { totalCount }
       ${labelFields}
+      vulnerabilityAlerts(states: OPEN) { totalCount }
       latestRelease { tagName name publishedAt url isPrerelease }
       pullRequests(states: OPEN, first: ${PRS_PER_REPO}, orderBy: { field: CREATED_AT, direction: ASC }) {
         totalCount
@@ -281,7 +316,8 @@ async function fetchRepoData(org, specs, labels) {
       newest: pullRequests(states: OPEN, last: 3, orderBy: { field: CREATED_AT, direction: ASC }) { nodes { ...PR } }
       branch: ${p.branch ? `ref(qualifiedName: $b${i})` : 'defaultBranchRef'} { name target { ... on Commit {
         statusCheckRollup { state }
-        week: history(since: $since, first: ${WEEK_SAMPLE}) { totalCount nodes { committedDate } }
+        week: history(since: $since, first: ${WEEK_SAMPLE}) { totalCount nodes { committedDate author { name user { login } } } }
+        prevWeek: history(since: $since14, until: $since) { totalCount }
         recent: history(first: ${COMMITS_PER_REPO}) { nodes {
           oid committedDate messageHeadline url
           author { name user { login } }
@@ -294,22 +330,109 @@ async function fetchRepoData(org, specs, labels) {
     ...parsed.map((p, i) => `$o${i}: String!, $n${i}: String!, $m${i}: String!, $u${i}: String!${p.branch ? `, $b${i}: String!` : ''}`),
     ...labels.map((_, j) => `$lab${j}: [String!]!`),
   ].join(', ');
-  const query = `query($since: GitTimestamp!, ${vars}) { ${fields} rateLimit { cost remaining limit resetAt } }
+  const query = `query($since: GitTimestamp!, $since14: GitTimestamp!, ${vars}) { ${fields} rateLimit { cost remaining limit resetAt } }
     fragment PR on PullRequest {
       number title url createdAt isDraft reviewDecision authorAssociation
       author { login }
     }`;
-  const variables = { since };
+  const variables = { since, since14 };
   parsed.forEach((p, i) => {
     variables[`o${i}`] = p.owner;
     variables[`n${i}`] = p.name;
     if (p.branch) variables[`b${i}`] = `refs/heads/${p.branch}`;
-    variables[`m${i}`] = `repo:${p.fullName} is:pr is:merged merged:>=${sinceDay}`;
+    variables[`m${i}`] = `repo:${p.fullName} is:pr is:merged merged:>=${d7}`;
     variables[`u${i}`] = `repo:${p.fullName} is:issue is:open no:label comments:0`;
   });
   labels.forEach((l, j) => { variables[`lab${j}`] = [l]; });
+
+  const vFields = parsed.map((_, i) => `
+    mn${i}: search(query: $mn${i}, type: ISSUE, first: ${MERGED_SAMPLE}) { nodes { ... on PullRequest { createdAt mergedAt author { login } reviews(first: 1) { nodes { submittedAt } } } } }
+    mp${i}: search(query: $mp${i}, type: ISSUE, first: 1) { issueCount }
+    po${i}: search(query: $po${i}, type: ISSUE, first: 1) { issueCount }
+    io${i}: search(query: $io${i}, type: ISSUE, first: 1) { issueCount }
+    ic${i}: search(query: $ic${i}, type: ISSUE, first: 1) { issueCount }
+    sp${i}: search(query: $sp${i}, type: ISSUE, first: 1) { issueCount }`).join('\n');
+  const vVars = parsed.map((_, i) => ['mn', 'mp', 'po', 'io', 'ic', 'sp'].map((k) => `$${k}${i}: String!`).join(', ')).join(', ');
+  const vQuery = `query(${vVars}) { ${vFields} }`;
+  const vVariables = {};
+  parsed.forEach((p, i) => {
+    vVariables[`mn${i}`] = `repo:${p.fullName} is:pr is:merged merged:>=${d7}`;
+    vVariables[`mp${i}`] = `repo:${p.fullName} is:pr is:merged merged:${d14}..${d8}`;
+    vVariables[`po${i}`] = `repo:${p.fullName} is:pr created:>=${d7}`;
+    vVariables[`io${i}`] = `repo:${p.fullName} is:issue created:>=${d7}`;
+    vVariables[`ic${i}`] = `repo:${p.fullName} is:issue is:closed closed:>=${d7}`;
+    vVariables[`sp${i}`] = `repo:${p.fullName} is:pr is:open draft:false created:<${dStale}`;
+  });
+
+  // CI runs need the branch name; start right away where it is known (explicit, or from the last snapshot) and
+  // after the core query otherwise.
+  const hints = parsed.map((p) => p.branch || snapshot.repos?.find((r) => r.key === p.key)?.branch || null);
+  const ciEarly = parsed.map((p, i) => (hints[i] ? fetchCiRuns(p, hints[i], since) : null));
+  const velocity = graphql(vQuery, vVariables).then((res) => res.data, (err) => { warn(`velocity query failed: ${err.message}`); return null; });
   const { data, errors } = await graphql(query, variables);
-  return { repos: parsed.map((p, i) => buildRow(p, i, data, errors, labels)), rateLimit: data?.rateLimit || null };
+  const rows = parsed.map((p, i) => buildRow(p, i, data, errors, labels));
+  const ciAll = parsed.map((p, i) => (rows[i].error ? null : ciEarly[i] || fetchCiRuns(p, rows[i].branch, since)));
+  const [vdata, ...cis] = await Promise.all([velocity, ...ciAll]);
+  rows.forEach((row, i) => { if (!row.error) { row.metrics = buildMetrics(i, vdata); row.ciRuns = cis[i]; } });
+  return { repos: rows, rateLimit: data?.rateLimit || null };
+}
+
+const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const hoursBetween = (a, b) => (new Date(b) - new Date(a)) / 36e5;
+
+function buildMetrics(i, vdata) {
+  const g = (k) => vdata?.[`${k}${i}`];
+  const merged = (g('mn')?.nodes || []).filter((n) => n && n.createdAt && !BOT_RE.test(n.author?.login || ''));
+  const cycle = merged.filter((n) => n.mergedAt).map((n) => hoursBetween(n.createdAt, n.mergedAt));
+  const firstReview = merged.filter((n) => n.reviews?.nodes?.[0]?.submittedAt).map((n) => hoursBetween(n.createdAt, n.reviews.nodes[0].submittedAt));
+  return {
+    available: Boolean(vdata),
+    mergedPrev7d: g('mp')?.issueCount ?? null,
+    prsOpened7d: g('po')?.issueCount ?? null,
+    issuesOpened7d: g('io')?.issueCount ?? null,
+    issuesClosed7d: g('ic')?.issueCount ?? null,
+    stalePrs: g('sp')?.issueCount ?? null,
+    staleDays: STALE_PR_DAYS,
+    cycleHours: median(cycle),
+    firstReviewHours: median(firstReview),
+    mergedSample: merged.length,
+    reviewedSample: firstReview.length,
+  };
+}
+
+const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure', 'action_required']);
+const IGNORED_CONCLUSIONS = new Set(['cancelled', 'skipped', 'neutral', 'stale']);
+
+// GitHub Actions runs on one branch (REST; GraphQL has no equivalent). Null when Actions is off, the token may not
+// read it, or GitHub is slow: a missing CI column must never fail the poll.
+async function fetchCiRuns(p, branch, since) {
+  if (!branch || !token) return null;
+  try {
+    const url = `https://api.github.com/repos/${p.fullName}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=${CI_RUNS_PAGE}&exclude_pull_requests=true`;
+    const res = await fetch(url, {
+      headers: { Authorization: `bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'repo-pulse' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const runs = ((await res.json()).workflow_runs || []).filter((r) => r.status === 'completed' && r.conclusion && !IGNORED_CONCLUSIONS.has(r.conclusion));
+    const recent = runs.filter((r) => r.created_at >= since);
+    const failed = recent.filter((r) => FAILED_CONCLUSIONS.has(r.conclusion));
+    const latest = new Map(); // newest completed run per workflow; "failing" means its latest run failed
+    for (const r of runs) if (!latest.has(r.name)) latest.set(r.name, r);
+    const failing = [...latest.values()].filter((r) => FAILED_CONCLUSIONS.has(r.conclusion)).map((r) => r.name);
+    const last = failed[0] || [...latest.values()].find((r) => FAILED_CONCLUSIONS.has(r.conclusion)) || null;
+    return {
+      branch,
+      runs7d: recent.length,
+      failed7d: failed.length,
+      failing,
+      lastFailure: last ? { name: last.name, url: last.html_url, at: last.created_at } : null,
+      truncated: runs.length >= CI_RUNS_PAGE && runs.at(-1)?.created_at >= since,
+    };
+  } catch (err) {
+    warn(`actions runs for ${p.fullName}@${branch} skipped: ${err.message}`);
+    return null;
+  }
 }
 
 async function fetchFixture(parsed) {
@@ -322,6 +445,9 @@ async function fetchFixture(parsed) {
   return { repos: rows, rateLimit: f.rateLimit || { cost: 1, remaining: 4999, limit: 5000, resetAt: new Date(Date.now() + 3600e3).toISOString() } };
 }
 
+// Bots skew people-metrics (a dependency bot can be the "top contributor", an auto-merge bot has a one-minute
+// cycle time), so they are left out of contributor concentration and the review-timing medians.
+const BOT_RE = /\[bot\]$|(^|[-_])bot$|^(dependabot|renovate|github-actions|greenkeeper)/i;
 const CI_STATE = { SUCCESS: 'passing', FAILURE: 'failing', ERROR: 'failing', PENDING: 'pending', EXPECTED: 'pending' };
 const ciOf = (rollup) => (rollup?.state ? CI_STATE[rollup.state] || null : null);
 const INSIDERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
@@ -335,6 +461,20 @@ function weekShape(nodes) {
     if (age >= 0 && age < 7) days[6 - age]++;
   }
   return days;
+}
+
+// Who wrote the week's commits: how many people, and how much of it the busiest one did.
+function contributorsOf(nodes) {
+  const counts = new Map();
+  let bots = 0;
+  for (const n of nodes || []) {
+    const who = n.author?.user?.login || n.author?.name || 'unknown';
+    if (BOT_RE.test(who)) { bots++; continue; }
+    counts.set(who, (counts.get(who) || 0) + 1);
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  const [top] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return { count: counts.size, botCommits: bots, top: top && total ? { name: top[0], share: top[1] / total } : null };
 }
 
 function buildRow(p, i, data, errors, labels) {
@@ -398,7 +538,10 @@ function buildRow(p, i, data, errors, labels) {
       newest: (r.newest?.nodes || []).map(toPr).reverse(), // newest first; the page uses these to notice arrivals
     },
     commits7d: target?.week.totalCount ?? 0,
+    commitsPrev7d: target?.prevWeek?.totalCount ?? null,
     week: { total: target?.week.totalCount ?? 0, days: weekShape(target?.week.nodes), sampled: (target?.week.totalCount ?? 0) > WEEK_SAMPLE },
+    contributors: contributorsOf(target?.week.nodes),
+    alerts: r.vulnerabilityAlerts?.totalCount ?? null, // null unless the token may read Dependabot alerts
     lastCommitAt: commits[0]?.committedAt || null,
     commits,
   };
@@ -428,6 +571,144 @@ async function fetchOrgRepos(org, force = false) {
   } while (cursor && pages < ORG_LIST_MAX_PAGES);
   orgRepos = { org, list, fetchedAt: Date.now(), truncated: Boolean(cursor), total };
   return orgRepos;
+}
+
+// ---------- self-update ----------
+
+const semver = (s) => (String(s).match(/^v?(\d+)\.(\d+)\.(\d+)/) || [0, 0, 0, 0]).slice(1, 4).map(Number);
+const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+
+async function checkForUpdate(reason) {
+  if (!UPDATE_CHECK) return update;
+  try {
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'repo-pulse' };
+    if (token && !FIXTURE_PATH) headers.Authorization = `bearer ${token}`; // optional; raises the unauthenticated limit
+    const res = await fetch(UPDATE_API, { headers, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) throw new Error(`GitHub returned ${res.status} ${res.statusText}`);
+    const rel = await res.json();
+    const latest = String(rel.tag_name || '').replace(/^v/, '');
+    const zip = (rel.assets || []).find((a) => /^repo-pulse-v[\d.]+\.zip$/.test(a.name));
+    const sums = (rel.assets || []).find((a) => a.name === 'SHA256SUMS');
+    update = {
+      ...update, latest, available: newer(latest, VERSION) && Boolean(zip && sums), url: rel.html_url || null, publishedAt: rel.published_at || null,
+      notes: String(rel.body || '').slice(0, 4000), zipUrl: zip?.browser_download_url || null, sumsUrl: sums?.browser_download_url || null, zipName: zip?.name || null,
+      checkedAt: new Date().toISOString(), error: null,
+    };
+    log(update.available ? `update available: v${latest} (running v${VERSION}); install from Settings or POST /api/update` : `up to date at v${VERSION} (checked ${reason})`);
+  } catch (err) {
+    update = { ...update, checkedAt: new Date().toISOString(), error: err.message };
+    warn(`update check failed (${reason}): ${err.message}`);
+  }
+  broadcast('snapshot', publicSnapshot());
+  return update;
+}
+
+function scheduleUpdateChecks() {
+  if (!UPDATE_CHECK) return;
+  setTimeout(() => checkForUpdate('at startup'), UPDATE_STARTUP_DELAY_MS).unref();
+  // setTimeout cannot wait a month in one go, so a six-hourly tick checks whether a month has passed.
+  updateTimer = setInterval(() => {
+    const last = update.checkedAt ? new Date(update.checkedAt).getTime() : 0;
+    if (Date.now() - last >= UPDATE_INTERVAL_MS) checkForUpdate('monthly');
+  }, 6 * 3600e3).unref();
+}
+
+function publicUpdate() {
+  const { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed } = update;
+  return { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed, container: IN_CONTAINER };
+}
+
+// Installing an update rewrites the server's own code, so it is for administrators: the admin token when one is set,
+// otherwise only clients on this machine.
+const canAdminister = (req) => (ADMIN_TOKEN ? authorized(req) : isLoopbackClient(req));
+
+async function download(url, maxBytes) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'repo-pulse' }, signal: AbortSignal.timeout(90_000) });
+  if (!res.ok) throw new Error(`download of ${url} failed: ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > maxBytes) throw new Error(`download of ${url} is larger than expected (${buf.length} bytes)`);
+  return buf;
+}
+
+// A minimal reader for the release zip: stored and deflated entries, sizes from the central directory, CRC checked.
+const CRC_TABLE = new Uint32Array(256).map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function unzip(buf) {
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('the download is not a zip file');
+  const count = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const files = [];
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('zip central directory is damaged');
+    const method = buf.readUInt16LE(p + 10), crc = buf.readUInt32LE(p + 16), csize = buf.readUInt32LE(p + 20), usize = buf.readUInt32LE(p + 24);
+    const nlen = buf.readUInt16LE(p + 28), elen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32), local = buf.readUInt32LE(p + 42);
+    const name = buf.toString('utf8', p + 46, p + 46 + nlen);
+    p += 46 + nlen + elen + clen;
+    if (name.endsWith('/')) continue;
+    if (buf.readUInt32LE(local) !== 0x04034b50) throw new Error(`zip entry ${name} is damaged`);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const raw = buf.subarray(start, start + csize);
+    const data = method === 0 ? raw : method === 8 ? inflateRawSync(raw) : null;
+    if (!data) throw new Error(`zip entry ${name} uses unsupported compression ${method}`);
+    if (data.length !== usize || crc32(data) !== crc) throw new Error(`zip entry ${name} failed its integrity check`);
+    files.push({ name, data });
+  }
+  return files;
+}
+
+async function installUpdate() {
+  const refuse = (msg) => Object.assign(new Error(msg), { status: 409 });
+  if (!UPDATE_CHECK) throw refuse('Update checks are off (UPDATE_CHECK=0).');
+  if (update.installing) throw refuse('An update is already being installed.');
+  if (!update.checkedAt) await checkForUpdate('before install');
+  if (!update.available) throw refuse(update.latest ? `Already up to date (v${VERSION}).` : 'No release found to install.');
+  if (IN_CONTAINER) throw refuse(`Running in a container: pull the image for v${update.latest} instead.`);
+  if (await stat(path.join(ROOT, '.git')).then(() => true, () => false)) throw refuse('This is a git checkout: run git pull (or check out the release tag) instead.');
+  try { await writeFile(path.join(ROOT, '.write-test'), ''); await unlink(path.join(ROOT, '.write-test')); }
+  catch { throw refuse(`The install folder ${ROOT} is not writable by this process; download the release zip instead.`); }
+  update = { ...update, installing: true, error: null };
+  broadcast('snapshot', publicSnapshot());
+  try {
+    log(`downloading ${update.zipName} for v${update.latest}`);
+    const [zip, sums] = await Promise.all([download(update.zipUrl, UPDATE_MAX_ZIP), download(update.sumsUrl, 10_000)]);
+    const expected = sums.toString('utf8').split('\n').map((l) => l.trim().split(/\s+/)).find((parts) => parts[1]?.replace(/^\*/, '') === update.zipName)?.[0];
+    const actual = createHash('sha256').update(zip).digest('hex');
+    if (!expected) throw new Error(`SHA256SUMS has no entry for ${update.zipName}`);
+    if (expected.toLowerCase() !== actual) throw new Error('the downloaded zip does not match SHA256SUMS');
+    const files = unzip(zip).filter((f) => UPDATABLE[f.name]).map((f) => ({ target: UPDATABLE[f.name], data: f.data }));
+    for (const need of REQUIRED_IN_RELEASE) if (!files.some((f) => f.target === need)) throw new Error(`the release zip has no ${need}`);
+    const newPkg = JSON.parse(files.find((f) => f.target === 'package.json').data.toString('utf8'));
+    if (!newer(newPkg.version, VERSION)) throw new Error(`the zip contains v${newPkg.version}, not newer than v${VERSION}`);
+    const backup = path.join(ROOT, '.previous');
+    await mkdir(path.join(backup, 'public'), { recursive: true });
+    for (const f of files) {
+      const target = path.join(ROOT, f.target);
+      await copyFile(target, path.join(backup, f.target)).catch(() => {});
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeAtomic(target, f.data);
+    }
+    update = { ...update, installing: false, installed: newPkg.version, available: false };
+    log(`installed v${newPkg.version} (previous files kept in ${backup}); exiting with code ${RESTART_EXIT_CODE} so the launcher restarts`);
+    broadcast('snapshot', publicSnapshot());
+    setTimeout(() => {
+      clearTimeout(pollTimer);
+      for (const res of clients) res.end();
+      server.close();
+      process.exit(RESTART_EXIT_CODE);
+    }, 400).unref();
+    return { ok: true, version: newPkg.version, restarting: true };
+  } catch (err) {
+    update = { ...update, installing: false, error: err.message };
+    warn(`update failed: ${err.message}`);
+    broadcast('snapshot', publicSnapshot());
+    throw Object.assign(new Error(`Update failed: ${err.message}`), { status: 502 });
+  }
 }
 
 // ---------- refresh loop ----------
@@ -503,12 +784,15 @@ function publicSnapshot() {
     tokenSource,
     viewer,
     build: buildId(),
+    version: VERSION,
+    update: publicUpdate(),
   };
 }
 
 function publicConfig(req) {
   return {
     ...config,
+    version: VERSION,
     maxRepos: MAX_REPOS,
     maxLabels: MAX_LABELS,
     pollOptions: POLL_OPTIONS,
@@ -647,6 +931,19 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/config') {
       return send(res, 200, publicConfig(req));
     }
+    if (req.method === 'GET' && url.pathname === '/api/update') {
+      return send(res, 200, { ...publicUpdate(), notes: update.notes, canAdminister: canAdminister(req) });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/update/check') {
+      if (!canAdminister(req)) return send(res, ADMIN_TOKEN ? 401 : 403, { error: ADMIN_TOKEN ? 'Admin token missing or wrong.' : 'Only this machine may check for updates.' });
+      if (!UPDATE_CHECK) return send(res, 409, { error: 'Update checks are off (UPDATE_CHECK=0).' });
+      await checkForUpdate('on request');
+      return send(res, 200, { ...publicUpdate(), notes: update.notes, canAdminister: true });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/update') {
+      if (!canAdminister(req)) return send(res, ADMIN_TOKEN ? 401 : 403, { error: ADMIN_TOKEN ? 'Admin token missing or wrong.' : 'Only this machine may install updates.' });
+      return send(res, 200, await installUpdate());
+    }
     if (req.method === 'POST' && url.pathname === '/api/config') {
       if (!authorized(req)) return send(res, 401, { error: 'Admin token missing or wrong.' });
       if (!isJson(req)) return send(res, 415, { error: 'Send settings as application/json.' });
@@ -732,8 +1029,10 @@ await whoAmI();
 if (tokenProblem) warn(tokenProblem);
 else log(`token: ${tokenSource === 'env' ? 'GITHUB_TOKEN environment variable' : tokenSource === 'gh' ? 'GitHub CLI login (gh auth token)' : tokenSource}${viewer ? ` as @${viewer}` : ''}`);
 schedulePolling();
+scheduleUpdateChecks();
 refresh('startup');
 server.listen(PORT, HOST, () => {
-  log(`Repo Pulse ${buildId()} on http://${HOST}:${PORT}  (config: ${CONFIG_PATH})`);
+  log(`Repo Pulse v${VERSION} (${buildId()}) on http://${HOST}:${PORT}  (config: ${CONFIG_PATH})`);
   if (WEBHOOK_SECRET) log('Webhooks enabled at POST /webhook');
+  if (!UPDATE_CHECK) log('Update checks are off');
 });

@@ -2,8 +2,10 @@
 // cache handling, token failure, proxy support and fixture mode. Starts short-lived servers on TEST_PORT (default
 // 4399) with throwaway files in the OS temp dir. Needs a GitHub token for the runs that touch GitHub.
 import { spawn } from 'node:child_process';
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
-import { createHmac } from 'node:crypto';
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { createHmac, createHash } from 'node:crypto';
+import { deflateRawSync } from 'node:zlib';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,12 +21,13 @@ const ok = (name, cond, detail = '') => { if (cond) { pass++; console.log(`  PAS
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let current = null;
 
-async function startServer(env, configText, { cache = true } = {}) {
+async function startServer(env, configText, { cache = true, root = ROOT } = {}) {
   const cfg = path.join(TMP, 'config.json');
   const cachePath = path.join(TMP, 'snapshot.json');
   if (configText === null) rmSync(cfg, { force: true }); else writeFileSync(cfg, configText);
   if (!cache) rmSync(cachePath, { force: true });
-  const child = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', REPO_PULSE_CONFIG: cfg, REPO_PULSE_CACHE: cachePath, REPO_PULSE_FIXTURE: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Update checks are off unless a run turns them on, so the suite never talks to the real release feed.
+  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', REPO_PULSE_CONFIG: cfg, REPO_PULSE_CACHE: cachePath, REPO_PULSE_FIXTURE: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '', UPDATE_CHECK: '0', REPO_PULSE_CONTAINER: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '', exited = false;
   child.stdout.on('data', (d) => (log += d)); child.stderr.on('data', (d) => (log += d));
   child.on('exit', () => { exited = true; }); // a killed child has a null exitCode on Windows, so track exit explicitly
@@ -60,6 +63,27 @@ function rawRequest(text) {
   });
 }
 const rawStatus = async (headers, method = 'GET', pathname = '/api/config') => Number((await rawRequest(`${method} ${pathname} HTTP/1.1\r\n${headers}\r\nConnection: close\r\n\r\n`)).match(/^HTTP\/1\.1 (\d+)/)?.[1]);
+
+// A zip writer good enough to stand in for the release workflow's `zip -r`: stored or deflated entries with CRCs.
+const CRC_TABLE = new Uint32Array(256).map((_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crc32 = (buf) => { let c = 0xffffffff; for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+function buildZip(entries) {
+  const locals = [], centrals = [];
+  let offset = 0;
+  for (const [name, data, deflate] of entries) {
+    const n = Buffer.from(name), d = data || Buffer.alloc(0), comp = deflate ? deflateRawSync(d) : d, method = deflate ? 8 : 0, crc = data ? crc32(d) : 0;
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(method, 8); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(d.length, 22); lh.writeUInt16LE(n.length, 26);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(method, 10); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(d.length, 24); ch.writeUInt16LE(n.length, 28); ch.writeUInt32LE(offset, 42);
+    locals.push(lh, n, comp); centrals.push(ch, n);
+    offset += 30 + n.length + comp.length;
+  }
+  const cd = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(entries.length, 8); eocd.writeUInt16LE(entries.length, 10); eocd.writeUInt32LE(cd.length, 12); eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, cd, eocd]);
+}
 
 const good = { org: 'github', repos: ['gitignore'], pollSeconds: 60, includeArchived: false };
 const baseConfig = JSON.stringify(good);
@@ -130,8 +154,13 @@ try {
     await post('/api/config', { ...good, repos: ['docs'], pollSeconds: 60 });
     const manualRes = await manual;
     ok('manual refresh answered 200', manualRes.status === 200, String(manualRes.status));
-    await waitForFetch();
-    await sleep(6000);
+    // Two GitHub fetches run back to back here (the manual one, then the queued settings one); wait for the second
+    // to be broadcast rather than guessing how long GitHub takes today.
+    // Only frames after the config event count: the stream's first frame replays the current snapshot, which may
+    // itself be a settings snapshot from the saves above.
+    const settled = () => { const t = events.join(''); const i = t.indexOf('event: config'); return i >= 0 && /"reason":"settings"/.test(t.slice(i)); };
+    for (let i = 0; i < 90 && !settled(); i++) await sleep(500);
+    await sleep(500);
     const text = events.join('');
     const snaps = [...text.matchAll(/event: snapshot\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]));
     const afterSave = text.slice(text.indexOf('event: config'));
@@ -258,7 +287,10 @@ try {
     const alpha2 = multi.repos?.find((r) => r.name === 'alpha') || {};
     ok('a repository under another owner keeps its owner', delta.owner === 'other' && delta.fullName === 'other/delta' && delta.key === 'other/delta', JSON.stringify([delta.owner, delta.fullName, delta.key]));
     ok('fixture rows carry label counts and the week shape', alpha2.labels?.bug === 7 && Array.isArray(alpha2.week?.days) && alpha2.week.days.length === 7, JSON.stringify([alpha2.labels, alpha2.week]));
-    ok('the cache file remembers the repository list it was made for', JSON.parse(readFileSync(s.cachePath, 'utf8')).specs.includes('other/delta'));
+    ok('fixture rows carry velocity metrics, contributors, alerts and CI runs', alpha2.metrics?.cycleHours === 20 && alpha2.contributors?.count === 3 && alpha2.alerts === 2 && alpha2.ciRuns?.failing?.[0] === 'Nightly' && alpha2.commitsPrev7d === 12, JSON.stringify([alpha2.metrics, alpha2.ciRuns]));
+    let cached = null; // the cache is written without blocking the broadcast, so give it a moment
+    for (let i = 0; i < 30 && !cached?.specs?.includes('other/delta'); i++) { try { cached = JSON.parse(readFileSync(s.cachePath, 'utf8')); } catch {} if (!cached?.specs?.includes('other/delta')) await sleep(100); }
+    ok('the cache file remembers the repository list it was made for', Boolean(cached?.specs?.includes('other/delta')), JSON.stringify(cached?.specs));
     await s.stop();
   }
 
@@ -272,6 +304,13 @@ try {
     ok('a missing branch is reported on its card, not as a failed poll', /Branch "no-such-branch"/.test(rows['github/docs@no-such-branch']?.error || '') && !snap.error, rows['github/docs@no-such-branch']?.error);
     ok('label counts come back per repository', typeof rows['github/gitignore']?.labels?.bug === 'number', JSON.stringify(rows['github/gitignore']?.labels));
     ok('the week shape has seven buckets that sum to at most the sample', rows['github/gitignore']?.week?.days?.length === 7, JSON.stringify(rows['github/gitignore']?.week));
+    const vm = rows['nodejs/undici@main']?.metrics || {};
+    ok('velocity metrics come back with last week\'s merges, PRs opened, issues opened and closed, and stale PRs', vm.available === true && ['mergedPrev7d', 'prsOpened7d', 'issuesOpened7d', 'issuesClosed7d', 'stalePrs'].every((k) => typeof vm[k] === 'number'), JSON.stringify(vm));
+    ok('cycle time and first review are medians in hours (or null when nothing merged)', (vm.cycleHours === null || vm.cycleHours >= 0) && (vm.firstReviewHours === null || vm.firstReviewHours >= 0) && typeof vm.mergedSample === 'number', JSON.stringify([vm.cycleHours, vm.firstReviewHours, vm.mergedSample]));
+    ok('last week\'s commit count and contributor concentration come back', typeof rows['nodejs/undici@main']?.commitsPrev7d === 'number' && typeof rows['nodejs/undici@main']?.contributors?.count === 'number', JSON.stringify(rows['nodejs/undici@main']?.contributors));
+    const ci = rows['nodejs/undici@main']?.ciRuns;
+    ok('GitHub Actions runs on the watched branch are summarised', ci && ci.branch === 'main' && typeof ci.runs7d === 'number' && typeof ci.failed7d === 'number' && Array.isArray(ci.failing), JSON.stringify(ci));
+    ok('security alerts are a number or null, never an error', rows['nodejs/undici@main']?.alerts === null || typeof rows['nodejs/undici@main']?.alerts === 'number');
     const html = await (await fetch(`${BASE}/`)).text();
     ok('the page carries the same build stamp as the snapshot', typeof snap.build === 'string' && html.includes(`<meta name="build" content="${snap.build}">`), snap.build);
     ok('a malformed entry is rejected with guidance', /is not a repository/.test((await post('/api/config', { org: 'github', repos: ['bad name!'], pollSeconds: 60 })).json?.error || ''));
@@ -282,7 +321,78 @@ try {
     ok('Dockerfile and .dockerignore ship with the repo', existsSync(path.join(ROOT, 'Dockerfile')) && existsSync(path.join(ROOT, '.dockerignore')));
   }
 
-  console.log('== Run 9: rejected token ==');
+  console.log('== Run 9: self-update from a release ==');
+  {
+    // A copy of the install, a fake release feed on a local port, and a zip built here with a bumped version.
+    const FEED = PORT + 7;
+    const install = path.join(TMP, 'install');
+    mkdirSync(path.join(install, 'public'), { recursive: true });
+    for (const f of ['server.js', 'public/index.html', 'package.json']) copyFileSync(path.join(ROOT, f), path.join(install, f));
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const zip = buildZip([
+      ['repo-pulse/', null],
+      ['repo-pulse/server.js', readFileSync(path.join(ROOT, 'server.js')), true],
+      ['repo-pulse/public/index.html', Buffer.concat([readFileSync(path.join(ROOT, 'public', 'index.html')), Buffer.from('\n<!-- release 99.0.0 -->\n')]), true],
+      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0' }, null, 2)), false],
+      ['repo-pulse/start.cmd', Buffer.from('@echo off\r\necho a launcher the update must not touch\r\n'), false],
+    ]);
+    const sums = `${createHash('sha256').update(zip).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
+    const release = { tag_name: 'v99.0.0', html_url: 'http://example.invalid/releases/v99.0.0', published_at: '2026-10-13T00:00:00Z', body: 'Test release', assets: [{ name: 'repo-pulse-v99.0.0.zip', browser_download_url: `http://127.0.0.1:${FEED}/zip` }, { name: 'SHA256SUMS', browser_download_url: `http://127.0.0.1:${FEED}/sums` }] };
+    const feed = http.createServer((req, res) => {
+      if (req.url === '/latest') return res.end(JSON.stringify(release));
+      if (req.url === '/zip') return res.end(zip);
+      if (req.url === '/sums') return res.end(sums);
+      if (req.url === '/badsums') return res.end(`${'0'.repeat(64)}  repo-pulse-v99.0.0.zip\n`);
+      res.statusCode = 404; res.end();
+    });
+    await new Promise((r) => feed.listen(FEED, '127.0.0.1', r));
+    const updEnv = { UPDATE_CHECK: '1', UPDATE_REPO: 'example/repo-pulse', UPDATE_API: `http://127.0.0.1:${FEED}/latest`, UPDATE_CHECK_DELAY_MS: '200' };
+    try {
+      let s = await startServer(updEnv, baseConfig, { cache: false, root: install });
+      let u = {};
+      for (let i = 0; i < 50 && !u.checkedAt; i++) { u = await (await fetch(`${BASE}/api/update`)).json(); if (!u.checkedAt) await sleep(200); }
+      ok('startup check finds the newer release', u.available === true && u.latest === '99.0.0' && u.current === pkg.version && u.canAdminister === true, JSON.stringify(u));
+      const snap = await getSnapshot();
+      ok('the snapshot carries the version and the update state', snap.version === pkg.version && snap.update?.available === true, JSON.stringify([snap.version, snap.update]));
+      // a corrupt checksum file must stop the install before anything is written
+      release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/badsums`;
+      await post('/api/update/check', '');
+      const bad = await post('/api/update', '');
+      ok('a checksum mismatch refuses the update and leaves the files alone', bad.status === 502 && /SHA256SUMS/.test(bad.json?.error || '') && JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === pkg.version, JSON.stringify(bad.json));
+      release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/sums`;
+      await post('/api/update/check', '');
+      const inst = await post('/api/update', '');
+      ok('installing answers ok and announces a restart', inst.status === 200 && inst.json?.ok === true && inst.json.version === '99.0.0' && inst.json.restarting === true, JSON.stringify(inst.json));
+      const code = await new Promise((r) => { if (s.child.exitCode !== null) return r(s.child.exitCode); s.child.on('exit', (c) => r(c)); setTimeout(() => r('timeout'), 10000); });
+      ok('the server exits with code 75 so a launcher restarts it', code === 75, String(code));
+      ok('the new files are in place and the old ones are backed up', JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === '99.0.0' && readFileSync(path.join(install, 'public', 'index.html'), 'utf8').includes('release 99.0.0') && JSON.parse(readFileSync(path.join(install, '.previous', 'package.json'), 'utf8')).version === pkg.version);
+      ok('launchers in the zip are not written', !existsSync(path.join(install, 'start.cmd')));
+      s = await startServer(updEnv, baseConfig, { cache: false, root: install });
+      const cfg = await (await fetch(`${BASE}/api/config`)).json();
+      const again = await post('/api/update', '');
+      ok('the restarted server runs the new version and reports up to date', cfg.version === '99.0.0' && again.status === 409 && /up to date/i.test(again.json?.error || ''), JSON.stringify([cfg.version, again.json]));
+      await s.stop();
+      s = await startServer({ ...updEnv, REPO_PULSE_CONTAINER: '1' }, baseConfig, { cache: false });
+      for (let i = 0; i < 50 && !(await (await fetch(`${BASE}/api/update`)).json()).checkedAt; i++) await sleep(200);
+      const inContainer = await post('/api/update', '');
+      ok('inside a container the update is refused with advice to pull the image', inContainer.status === 409 && /container/i.test(inContainer.json?.error || ''), JSON.stringify(inContainer.json));
+      await s.stop();
+      s = await startServer(updEnv, baseConfig, { cache: false }); // from the repository itself, which is a git checkout
+      for (let i = 0; i < 50 && !(await (await fetch(`${BASE}/api/update`)).json()).checkedAt; i++) await sleep(200);
+      const inCheckout = await post('/api/update', '');
+      ok('inside a git checkout the update is refused with advice to pull', inCheckout.status === 409 && /git pull/.test(inCheckout.json?.error || ''), JSON.stringify(inCheckout.json));
+      await s.stop();
+      s = await startServer({ UPDATE_CHECK: '0' }, baseConfig, { cache: false });
+      const off = await (await fetch(`${BASE}/api/update`)).json();
+      const offInstall = await post('/api/update', '');
+      ok('UPDATE_CHECK=0 turns checks off and refuses installs', off.enabled === false && offInstall.status === 409 && /UPDATE_CHECK/.test(offInstall.json?.error || ''), JSON.stringify([off, offInstall.json]));
+      await s.stop();
+    } finally {
+      feed.close();
+    }
+  }
+
+  console.log('== Run 10: rejected token ==');
   {
     const s = await startServer({ GITHUB_TOKEN: 'ghp_definitely_invalid_token' }, baseConfig, { cache: false });
     const snap = await waitForFetch(15000);

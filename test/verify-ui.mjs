@@ -96,8 +96,28 @@ try {
   ok('a watched branch shows in the checks chip', (await evalJs(`document.querySelectorAll('.card')[3].querySelector('.chip')?.textContent`)) === 'release/2.x ● passing');
   ok('the week shape renders as seven bars', (await evalJs(`document.querySelector('.card.ci-failing .spark')?.querySelectorAll('rect').length`)) === 7);
   ok('label counts appear in the counts line', /7 bug/.test(await evalJs(`document.querySelectorAll('.card.ci-failing .meta')[1].textContent`)));
+  ok('CI failures this week show on the card with the failing workflow', /checks 7d: 16 passed · 4 failed.*failing now: Nightly/.test(await text('.card.ci-failing .meta.ci')) && (await evalJs(`document.querySelector('.card.ci-failing .meta.ci a')?.href`)) === 'https://github.com/example/alpha/actions/runs/1', await text('.card.ci-failing .meta.ci'));
+  ok('open security alerts show on the card', /2 open security alerts/.test(await text('.card.ci-failing')));
+  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.querySelectorAll('#velocity-total td').length`)) === 11);
+  const alphaRow = await evalJs(`[...document.querySelectorAll('#velocity-body tr')[0].cells].map(c => c.textContent)`);
+  ok('velocity cells carry deltas, medians, people, issues, stale PRs, CI and alerts', alphaRow[1] === '5↑2' && alphaRow[3] === '20h' && alphaRow[4] === '4h' && alphaRow[5] === '18↑6' && alphaRow[6] === '3 · top 50%' && alphaRow[7] === '+9 / −4 (+5)' && alphaRow[8] === '2' && alphaRow[9] === '4 / 20 · Nightly' && alphaRow[10] === '2', JSON.stringify(alphaRow));
+  ok('a repository without Actions shows a dash for CI', (await evalJs(`document.querySelectorAll('#velocity-body tr')[1].cells[9].textContent`)) === '—');
+  await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))`);
+  ok('"v" hides the velocity table and remembers it', await hidden('#velocity') && /"velocity":false/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
+  await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))`);
+  ok('"v" shows it again', !(await hidden('#velocity')));
+
+  // an available release shows an update bar; the Settings panel mirrors it
+  await evalJs(`handleSnapshot({ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } });`);
+  ok('an available release shows an update bar with notes and an Update button', !(await hidden('#update-bar')) && /v99\.0\.0 is available \(running v1\.1\.0\)/.test(await text('#update-bar')) && (await evalJs(`document.querySelector('#update-bar button')?.textContent`)) === 'Update now', await text('#update-bar'));
+  await evalJs(`document.getElementById('tab-settings').click()`);
+  ok('the Updates panel reports the version and the available release', await until(`/Repo Pulse v1\\.1\\.0\\. Checked .*v99\\.0\\.0 is available/.test(document.getElementById('update-status').textContent) && !document.getElementById('update-install').hidden`), await text('#update-status'));
+  await evalJs(`document.getElementById('tab-dashboard').click()`);
+  await evalJs(`handleSnapshot({ ...snap, update: { ...snap.update, available: false } });`);
+  ok('the bar disappears when nothing is available', await hidden('#update-bar'));
   ok('failing checks mark the card and chip', await evalJs(`document.querySelector('.card.ci-failing .chip.bad')?.textContent`) === 'main ● failing');
-  ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /oldest 12d/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
+  // The fixture's dates are fixed, so the age keeps growing: accept any compact duration rather than today's value.
+  ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /^oldest \d+(m|h|d|mo|y)$/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
   ok('release appears in the meta line', /release v2\.3\.0/.test(await text('.card.ci-failing .meta')), await text('.card.ci-failing .meta'));
   ok('counts line lists approved, changes, drafts and untriaged', /1 approved · 1 changes requested · 1 draft · 42 issues open · 3 untriaged/.test(await evalJs(`document.querySelectorAll('.card.ci-failing .meta')[1].textContent`)));
   ok('oldest-open list has three PRs with state chips', (await evalJs(`document.querySelectorAll('.card.ci-failing .waiting li:not(.caption)').length`)) === 3 && (await evalJs(`[...document.querySelectorAll('.card.ci-failing .waiting .chip')].map(c => c.textContent).join('|')`)) === 'Needs review|Approved|Changes requested');
