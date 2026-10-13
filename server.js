@@ -669,6 +669,7 @@ async function installUpdate() {
   if (!update.checkedAt) await checkForUpdate('before install');
   if (!update.available) throw refuse(update.latest ? `Already up to date (v${VERSION}).` : 'No release found to install.');
   if (IN_CONTAINER) throw refuse(`Running in a container: pull the image for v${update.latest} instead.`);
+  if (await stat(path.join(ROOT, '.git')).then(() => true, () => false)) throw refuse('This is a git checkout: run git pull (or check out the release tag) instead.');
   try { await writeFile(path.join(ROOT, '.write-test'), ''); await unlink(path.join(ROOT, '.write-test')); }
   catch { throw refuse(`The install folder ${ROOT} is not writable by this process; download the release zip instead.`); }
   update = { ...update, installing: true, error: null };

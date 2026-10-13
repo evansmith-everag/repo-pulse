@@ -283,7 +283,9 @@ try {
     ok('a repository under another owner keeps its owner', delta.owner === 'other' && delta.fullName === 'other/delta' && delta.key === 'other/delta', JSON.stringify([delta.owner, delta.fullName, delta.key]));
     ok('fixture rows carry label counts and the week shape', alpha2.labels?.bug === 7 && Array.isArray(alpha2.week?.days) && alpha2.week.days.length === 7, JSON.stringify([alpha2.labels, alpha2.week]));
     ok('fixture rows carry velocity metrics, contributors, alerts and CI runs', alpha2.metrics?.cycleHours === 20 && alpha2.contributors?.count === 3 && alpha2.alerts === 2 && alpha2.ciRuns?.failing?.[0] === 'Nightly' && alpha2.commitsPrev7d === 12, JSON.stringify([alpha2.metrics, alpha2.ciRuns]));
-    ok('the cache file remembers the repository list it was made for', JSON.parse(readFileSync(s.cachePath, 'utf8')).specs.includes('other/delta'));
+    let cached = null; // the cache is written without blocking the broadcast, so give it a moment
+    for (let i = 0; i < 30 && !cached?.specs?.includes('other/delta'); i++) { try { cached = JSON.parse(readFileSync(s.cachePath, 'utf8')); } catch {} if (!cached?.specs?.includes('other/delta')) await sleep(100); }
+    ok('the cache file remembers the repository list it was made for', Boolean(cached?.specs?.includes('other/delta')), JSON.stringify(cached?.specs));
     await s.stop();
   }
 
@@ -369,6 +371,11 @@ try {
       for (let i = 0; i < 50 && !(await (await fetch(`${BASE}/api/update`)).json()).checkedAt; i++) await sleep(200);
       const inContainer = await post('/api/update', '');
       ok('inside a container the update is refused with advice to pull the image', inContainer.status === 409 && /container/i.test(inContainer.json?.error || ''), JSON.stringify(inContainer.json));
+      await s.stop();
+      s = await startServer(updEnv, baseConfig, { cache: false }); // from the repository itself, which is a git checkout
+      for (let i = 0; i < 50 && !(await (await fetch(`${BASE}/api/update`)).json()).checkedAt; i++) await sleep(200);
+      const inCheckout = await post('/api/update', '');
+      ok('inside a git checkout the update is refused with advice to pull', inCheckout.status === 409 && /git pull/.test(inCheckout.json?.error || ''), JSON.stringify(inCheckout.json));
       await s.stop();
       s = await startServer({ UPDATE_CHECK: '0' }, baseConfig, { cache: false });
       const off = await (await fetch(`${BASE}/api/update`)).json();
