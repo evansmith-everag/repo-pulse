@@ -1,0 +1,82 @@
+{
+  "rateLimit": { "cost": 1, "remaining": 4321, "limit": 5000, "resetAt": "2099-01-01T00:00:00Z" },
+  "repos": [
+    {
+      "name": "alpha",
+      "url": "https://github.com/example/alpha",
+      "archived": false,
+      "branch": "main",
+      "ci": "failing",
+      "release": { "tag": "v2.3.0", "name": "v2.3.0", "publishedAt": "2026-10-07T10:00:00Z", "url": "https://github.com/example/alpha/releases/tag/v2.3.0", "prerelease": false },
+      "openIssues": 42,
+      "untriaged": 3,
+      "labels": { "bug": 7 },
+      "openPrs": 7,
+      "merged7d": 5,
+      "prs": {
+        "total": 7, "sampled": false, "awaiting": 2, "approved": 1, "changes": 1, "drafts": 1,
+        "oldestAwaitingAt": "2026-10-01T09:00:00Z",
+        "waiting": [
+          { "number": 101, "title": "Fix the thing", "url": "https://github.com/example/alpha/pull/101", "createdAt": "2026-10-01T09:00:00Z", "author": "casey", "draft": false, "decision": "review", "outside": false, "firstTime": false },
+          { "number": 102, "title": "Add the other thing", "url": "https://github.com/example/alpha/pull/102", "createdAt": "2026-10-03T09:00:00Z", "author": "newcomer", "draft": false, "decision": "approved", "outside": true, "firstTime": true },
+          { "number": 103, "title": "Refactor everything", "url": "https://github.com/example/alpha/pull/103", "createdAt": "2026-10-05T09:00:00Z", "author": "dana", "draft": false, "decision": "changes", "outside": false, "firstTime": false }
+        ],
+        "newest": [
+          { "number": 107, "title": "Newest PR", "url": "https://github.com/example/alpha/pull/107", "createdAt": "2026-10-12T09:00:00Z", "author": "sam", "draft": false, "decision": "review", "outside": true, "firstTime": false }
+        ]
+      },
+      "commits7d": 18,
+      "week": { "total": 18, "days": [1, 4, 0, 6, 2, 3, 2], "sampled": false },
+      "lastCommitAt": "2026-10-13T08:00:00Z",
+      "commits": [
+        { "sha": "a1b2c3d", "message": "feat: do the thing", "author": "casey", "committedAt": "2026-10-13T08:00:00Z", "url": "https://github.com/example/alpha/commit/a1b2c3d" },
+        { "sha": "b2c3d4e", "message": "chore: bump deps", "author": "dependabot[bot]", "committedAt": "2026-10-13T07:00:00Z", "url": "https://github.com/example/alpha/commit/b2c3d4e" },
+        { "sha": "c3d4e5f", "message": "fix: the other thing", "author": "dana", "committedAt": "2026-10-12T20:00:00Z", "url": "https://github.com/example/alpha/commit/c3d4e5f" }
+      ]
+    },
+    {
+      "name": "beta",
+      "url": "https://github.com/example/beta",
+      "archived": false,
+      "branch": "main",
+      "ci": "passing",
+      "release": null,
+      "openIssues": 0,
+      "untriaged": 0,
+      "labels": {},
+      "openPrs": 0,
+      "merged7d": 0,
+      "prs": { "total": 0, "sampled": false, "awaiting": 0, "approved": 0, "changes": 0, "drafts": 0, "oldestAwaitingAt": null, "waiting": [], "newest": [] },
+      "commits7d": 0,
+      "week": { "total": 0, "days": [0, 0, 0, 0, 0, 0, 0], "sampled": false },
+      "lastCommitAt": "2026-08-01T08:00:00Z",
+      "commits": [
+        { "sha": "d4e5f6a", "message": "docs: quiet repo", "author": "casey", "committedAt": "2026-08-01T08:00:00Z", "url": "https://github.com/example/beta/commit/d4e5f6a" }
+      ]
+    },
+    { "name": "gamma", "error": "Could not resolve to a Repository with the name 'example/gamma'." },
+    {
+      "name": "delta",
+      "owner": "other",
+      "url": "https://github.com/other/delta",
+      "archived": false,
+      "branch": "release/2.x",
+      "ci": "passing",
+      "release": null,
+      "openIssues": 1,
+      "untriaged": 0,
+      "labels": { "bug": 0 },
+      "openPrs": 1,
+      "merged7d": 2,
+      "prs": { "total": 1, "sampled": false, "awaiting": 1, "approved": 0, "changes": 0, "drafts": 0, "oldestAwaitingAt": "2026-10-11T09:00:00Z", "waiting": [
+        { "number": 9, "title": "Backport fix", "url": "https://github.com/other/delta/pull/9", "createdAt": "2026-10-11T09:00:00Z", "author": "casey", "draft": false, "decision": "review", "outside": false, "firstTime": false }
+      ], "newest": [] },
+      "commits7d": 3,
+      "week": { "total": 3, "days": [0, 0, 1, 0, 2, 0, 0], "sampled": false },
+      "lastCommitAt": "2026-10-11T08:00:00Z",
+      "commits": [
+        { "sha": "e5f6a7b", "message": "fix: backport", "author": "casey", "committedAt": "2026-10-11T08:00:00Z", "url": "https://github.com/other/delta/commit/e5f6a7b" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+name: Release
+
+# Push a tag like v1.2.0 and this attaches repo-pulse-v1.2.0.zip to a GitHub Release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build the zip
+        run: |
+          mkdir -p dist/repo-pulse
+          cp -r server.js public package.json README.md LICENSE start.cmd start.sh dist/repo-pulse/
+          chmod +x dist/repo-pulse/start.sh
+          cd dist && zip -r "repo-pulse-${GITHUB_REF_NAME}.zip" repo-pulse && sha256sum "repo-pulse-${GITHUB_REF_NAME}.zip" > SHA256SUMS
+      - name: Publish the release
+        run: gh release create "$GITHUB_REF_NAME" "dist/repo-pulse-${GITHUB_REF_NAME}.zip" dist/SHA256SUMS --title "Repo Pulse $GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

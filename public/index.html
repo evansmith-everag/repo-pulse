@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="build" content="__BUILD__">
+<title>Repo Pulse</title>
+<style>
+  /* Layout: a status strip, repo cards side by side (stacking when narrow), then one merged commit feed.
+     System fonts only: the page makes no network request except to its own server. */
+  :root {
+    --bg: #f5f6f3; --panel: #ffffff; --line: #dfe2da; --line-strong: #848d86; --fg: #1d2420; --muted: #66706a;
+    --accent: #2f6b4f; --ok: #2f7d4f; --warn: #8f5313; --bad: #b8433a;
+    --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+    --radius: 8px; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
+      --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
+    --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font-body); }
+  .wrap { max-width: 78rem; margin-inline: auto; padding: 24px 16px 48px; display: flex; flex-direction: column; gap: 24px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  kbd { font: .8em var(--font-mono); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+  h1 { font: 400 1.9rem/1.1 var(--font-display); margin: 0; }
+  .org { font-family: var(--font-mono); font-size: .85rem; color: var(--muted); }
+  nav { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  nav button { font: 500 .85rem var(--font-body); border: 0; background: transparent; color: var(--muted); padding: 6px 14px; border-radius: 999px; cursor: pointer; min-height: 24px; }
+  nav button[aria-selected="true"] { background: var(--fg); color: var(--bg); }
+  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-size: .85rem; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 0 var(--ok); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--warn); }
+  .dot.down { background: var(--bad); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+  #updated.stale { color: var(--warn); }
+  #budget.low, #update-note { color: var(--warn); }
+  .linkbtn { font: inherit; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; min-height: 24px; }
+  .linkbtn:disabled { opacity: .5; cursor: default; text-decoration: none; }
+  .linkbtn[aria-pressed="true"] { color: var(--warn); }
+  .banner { border: 1px solid var(--bad); color: var(--bad); border-radius: var(--radius); padding: 10px 14px; font-size: .9rem; }
+  .notice { border: 1px solid var(--line); color: var(--muted); border-radius: var(--radius); padding: 10px 14px; font-size: .9rem; }
+  .notice.warn { border-color: var(--warn); color: var(--warn); font-weight: 500; }
+  body.stale .repos, body.stale .feed { opacity: .55; }
+
+  .repos { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .card.ci-failing { border-top: 4px solid var(--bad); }
+  .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 0; font: inherit; }
+  .card-top .repo-link { font: 600 1.05rem var(--font-body); color: var(--fg); text-decoration: none; overflow-wrap: anywhere; }
+  .card-top .repo-link:hover { text-decoration: underline; }
+  .card-top .repo-link .owner { font-weight: 400; color: var(--muted); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { font-size: .75rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; cursor: default; line-height: 1.5; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.muted { color: var(--muted); } .chip.bad { color: var(--bad); font-weight: 600; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat b { display: block; font: 400 2.1rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
+  .stat .label { display: block; font-size: .78rem; color: var(--muted); letter-spacing: .01em; }
+  .stat .sub { display: block; font-size: .72rem; color: var(--muted); font-family: var(--font-mono); }
+  .stat .spark { display: block; margin-top: 4px; }
+  .stat .delta { font: 600 .8rem var(--font-body); color: var(--accent); vertical-align: middle; margin-left: 4px; }
+  .stat b.flash { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { color: var(--accent); } to { color: var(--fg); } }
+  .meta { font-size: .8rem; color: var(--muted); font-family: var(--font-mono); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+  .meta a { color: var(--accent); text-decoration: none; }
+  .meta a:hover { text-decoration: underline; }
+  .waiting { list-style: none; margin: 0; padding: 12px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  .waiting .caption { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .waiting li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; font-size: .85rem; align-items: baseline; }
+  .waiting .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .waiting .who { grid-column: 2; font-size: .75rem; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .mini { list-style: none; margin: 0; padding: 12px 0 0; display: none; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); }
+  .mini li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; font-size: .85rem; align-items: baseline; min-width: 0; }
+  .mini .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sha, .prnum { font: 500 .78rem var(--font-mono); color: var(--accent); text-decoration: none; }
+  .sha:hover, .prnum:hover { text-decoration: underline; }
+  .ago { font-size: .75rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .empty { background: var(--panel); border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: 32px 20px; text-align: center; color: var(--muted); }
+  .steps { text-align: left; max-width: 36rem; margin-inline: auto; display: flex; flex-direction: column; gap: 10px; }
+  .steps h2 { margin: 0; font: 600 1rem var(--font-body); color: var(--fg); }
+  .steps ol { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 6px; }
+  .steps .ok { color: var(--ok); } .steps .todo { color: var(--fg); }
+
+  .feed { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .feed h2, .settings h2 { margin: 0; font: 600 1rem var(--font-body); }
+  .tablebox { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th { text-align: left; font-weight: 500; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.msg { min-width: 16rem; }
+  td.repo, td.who { white-space: nowrap; color: var(--muted); font-size: .8rem; }
+  .repo-inline { display: none; font-size: .78rem; color: var(--muted); }
+  tr.new td:first-child { border-left: 3px solid var(--accent); }
+  tr.new td { animation: rowin 2s ease-out; }
+  @keyframes rowin { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
+  .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: middle; }
+  .tag.new { color: var(--accent); border-color: var(--accent); }
+  @media (max-width: 40rem) {
+    td.who, th.who, td.repo, th.repo, td.when, th.when { display: none; }
+    td.msg { min-width: 0; }
+    .repo-inline { display: block; } /* the Repo and When columns are gone, so name them under the message */
+  }
+  @media (prefers-reduced-motion: reduce) { .dot.live, .stat b.flash, tr.new td { animation: none; } }
+  :root[data-motion="reduce"] .dot.live, :root[data-motion="reduce"] .stat b.flash, :root[data-motion="reduce"] tr.new td { animation: none; }
+
+  .settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 20rem); gap: 16px; align-items: start; }
+  @media (max-width: 52rem) { .settings { grid-template-columns: 1fr; } }
+  .column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+  .help { font-size: .82rem; color: var(--muted); margin: 0; }
+  .help.warn { color: var(--warn); }
+  label { font-size: .82rem; font-weight: 500; display: flex; flex-direction: column; gap: 4px; }
+  input[type="text"], input[type="search"], input[type="password"], select { font: inherit; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--fg); width: 100%; }
+  .row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+  .row label { flex: 1 1 12rem; }
+  .check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
+  .picklist { list-style: none; margin: 0; padding: 0; max-height: 26rem; overflow: auto; border: 1px solid var(--line-strong); border-radius: 6px; }
+  .picklist li { border-bottom: 1px solid var(--line); }
+  .picklist li:last-child { border-bottom: 0; }
+  .picklist label { flex-direction: row; align-items: flex-start; gap: 10px; padding: 8px 12px; font-weight: 400; cursor: pointer; }
+  .picklist label:hover { background: var(--bg); }
+  .picklist input:disabled + div { color: var(--muted); }
+  .picklist .name { font-family: var(--font-mono); font-size: .85rem; }
+  .picklist .desc { font-size: .78rem; color: var(--muted); }
+  .selected { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
+  .selected button { font: .82rem var(--font-mono); border: 1px solid var(--accent); color: var(--accent); background: transparent; border-radius: 999px; padding: 3px 10px; cursor: pointer; min-height: 24px; }
+  .saverow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .primary, .secondary { font: 600 .9rem var(--font-body); border: 0; border-radius: 6px; padding: 10px 16px; cursor: pointer; }
+  .primary { background: var(--accent); color: var(--bg); }
+  .secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  .primary:disabled, .secondary:disabled { opacity: .5; cursor: default; }
+  .note { font-size: .82rem; min-height: 1.2em; }
+  .note.ok { color: var(--ok); } .note.bad { color: var(--bad); }
+  code { font-family: var(--font-mono); font-size: .82em; overflow-wrap: anywhere; }
+  details summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
+  [hidden] { display: none !important; }
+
+  /* TV mode: fills a wall display, bigger type, no chrome, no feed, commits inside the cards. */
+  body.tv { font-size: 22px; cursor: none; }
+  body.tv .wrap { max-width: none; padding: 32px 40px; gap: 28px; }
+  body.tv nav, body.tv #refresh-now, body.tv #pause, body.tv .feed, body.tv #mode, body.tv #budget, body.tv .abs, body.tv .waiting .who { display: none; }
+  body.tv h1 { font-size: 2.6rem; }
+  body.tv .status { font-size: 1.1rem; }
+  body.tv #updated-ago { font-size: 1.1rem; }
+  body.tv .repos { grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr)); gap: 24px; }
+  body.tv .card { padding: 28px; gap: 18px; }
+  body.tv .card-top .repo-link { font-size: 1.5rem; }
+  body.tv .chip { font-size: .85rem; }
+  body.tv .stat b { font-size: 4.5rem; }
+  body.tv .stat .label { font-size: .9rem; }
+  body.tv .stat .sub { font-size: .8rem; }
+  body.tv .stat .spark { transform: scale(1.6); transform-origin: left top; margin-bottom: 12px; }
+  body.tv .meta { font-size: .9rem; }
+  body.tv .waiting li, body.tv .mini li { font-size: 1rem; }
+  body.tv .mini { display: flex; }
+  body.tv .notice, body.tv .banner { font-size: 1.1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Repo Pulse</h1>
+      <div class="org" id="org-label"></div>
+    </div>
+    <nav role="tablist" aria-label="Views">
+      <button role="tab" id="tab-dashboard" aria-selected="true" aria-controls="view-dashboard">Dashboard</button>
+      <button role="tab" id="tab-settings" aria-selected="false" aria-controls="view-settings" tabindex="-1">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+  <section id="view-dashboard" role="tabpanel" aria-labelledby="tab-dashboard" style="display:flex;flex-direction:column;gap:24px">
+    <div class="status">
+      <span aria-live="polite"><span class="dot" id="conn-dot"></span><span id="conn-text">Connecting…</span></span>
+      <span id="updated" hidden>Updated <span id="updated-ago" class="ago" data-fine="1"></span><span class="abs"> (<time id="updated-time"></time>)</span></span>
+      <span id="mode"></span>
+      <span id="budget" hidden></span>
+      <button class="linkbtn" id="pause" type="button" aria-pressed="false">Pause updates</button>
+      <button class="linkbtn" id="refresh-now" type="button" disabled>Refresh now</button>
+      <span id="update-note" role="status" hidden>A newer version of this page is ready. <button class="linkbtn" id="reload-now" type="button">Reload</button></span>
+    </div>
+    <div class="notice" id="notice" role="status" hidden></div>
+    <div class="banner" id="error-banner" role="alert" hidden></div>
+    <div class="repos" id="repos"><div class="empty">Loading…</div></div>
+    <section class="feed" id="feed" aria-labelledby="feed-title" hidden>
+      <h2 id="feed-title">Recent commits</h2>
+      <p class="help">Up to five of the latest commits on each repository's watched branch, merged newest first.</p>
+      <div class="tablebox">
+        <table>
+          <thead><tr><th scope="col">Commit</th><th scope="col">Message</th><th scope="col" class="repo">Repo</th><th scope="col" class="who">Author</th><th scope="col" class="when">When</th></tr></thead>
+          <tbody id="feed-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+    <div class="settings">
+      <div class="column">
+        <div class="panel">
+          <h2 id="repos-title">Repositories</h2>
+          <p class="help" id="token-line"></p>
+          <div class="row">
+            <label>Organization or user<input type="text" id="org" autocomplete="off" placeholder="GitHub organization or user name"></label>
+            <button class="secondary" id="load-owner" type="button">Load repositories</button>
+          </div>
+          <p class="help"><button class="linkbtn" id="use-me" type="button" hidden></button></p>
+          <p class="help">Pick up to <span id="max-repos">3</span> from the list, or add any repository by name. Write <code>owner/name</code> for a repository under another owner and <code>name@branch</code> to watch a branch other than the default.</p>
+          <div class="selected" id="selected" aria-live="polite"></div>
+          <p class="help warn" id="limit-note" hidden>Limit reached. Remove one to pick another.</p>
+          <div class="row">
+            <label>Add by name<input type="text" id="add-repo" autocomplete="off" placeholder="name, owner/name, or owner/name@branch"></label>
+            <button class="secondary" id="add-btn" type="button">Add</button>
+          </div>
+          <p class="help warn" id="add-note" role="status" hidden></p>
+          <label for="repo-search">Filter the list</label>
+          <input type="search" id="repo-search" placeholder="Filter repositories">
+          <ul class="picklist" id="picklist" role="group" aria-labelledby="repos-title" aria-describedby="limit-note"><li class="help" style="padding:12px">Loading repositories…</li></ul>
+          <button class="linkbtn" id="reload-org" type="button" style="align-self:flex-start">Reload repository list from GitHub</button>
+        </div>
+      </div>
+      <div class="column">
+        <div class="panel">
+          <h2>Options</h2>
+          <label>Poll every<select id="poll"></select></label>
+          <label><span>Issue labels to count (comma-separated, up to <span id="max-labels">5</span>)</span><input type="text" id="labels" autocomplete="off" placeholder="bug, help wanted"></label>
+          <label class="check"><input type="checkbox" id="archived"> Show archived repositories in the list</label>
+          <label id="admin-wrap" hidden>Admin token<input type="password" id="admin" autocomplete="off"></label>
+          <div class="saverow">
+            <button class="primary" id="save" type="button">Save settings</button>
+            <span class="help warn" id="dirty" hidden>Unsaved changes</span>
+          </div>
+          <div class="note" id="save-note" role="status"></div>
+          <p class="note bad" id="config-problem" hidden></p>
+          <details id="config-path-wrap" hidden><summary>Where settings are saved</summary><p class="help"><code id="config-path"></code></p></details>
+        </div>
+        <div class="panel">
+          <h2>This browser</h2>
+          <p class="help">These apply only here and are kept in this browser, not in the shared settings.</p>
+          <label>Theme<select id="pref-theme"><option value="system">Match the system</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          <label class="check"><input type="checkbox" id="pref-motion"> Reduce motion</label>
+          <label class="check"><input type="checkbox" id="pref-bots"> Hide commits by bots</label>
+          <label class="check"><input type="checkbox" id="pref-announce"> Announce changes to screen readers</label>
+          <label class="check"><input type="checkbox" id="pref-notify"> Browser notification for new PRs and failing checks</label>
+          <p class="help">TV mode for a wall display: open <code id="tv-link"></code>. Keyboard: <kbd>r</kbd> refresh, <kbd>p</kbd> pause, <kbd>d</kbd> dashboard, <kbd>s</kbd> settings, <kbd>t</kbd> theme.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+  </main>
+  <div class="sr-only" id="announce" aria-live="polite" aria-atomic="true"></div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const fmt = new Intl.NumberFormat('en');
+  const stamp = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium' });
+  const stampLong = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'long' });
+  const timeOnly = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+  const dateOnly = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' });
+  const ago = (iso, fine = false) => {
+    if (!iso) return '—';
+    const s = (Date.now() - new Date(iso)) / 1000;
+    if (s < 60) return fine ? Math.max(0, Math.round(s)) + 's ago' : 'just now';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    if (s < 86400) return Math.round(s / 3600) + 'h ago';
+    if (s < 30 * 86400) return Math.round(s / 86400) + 'd ago';
+    return dateOnly.format(new Date(iso));
+  };
+  // Compact duration for "oldest 6d" / "3y old": never a date, so it stays short.
+  const span = (iso) => {
+    const d = (Date.now() - new Date(iso)) / 864e5;
+    if (d < 1 / 24) return Math.max(1, Math.round(d * 1440)) + 'm';
+    if (d < 1) return Math.round(d * 24) + 'h';
+    if (d < 30) return Math.round(d) + 'd';
+    if (d < 365) return Math.round(d / 30.4) + 'mo';
+    return (d / 365).toFixed(d < 730 ? 1 : 0).replace(/\.0$/, '') + 'y';
+  };
+  // A relative age that keeps ticking (see tickAges) and shows the exact local time on hover.
+  const agoEl = (iso, tag = 'span') => {
+    const n = el(tag, 'ago', ago(iso));
+    if (iso) { n.dataset.iso = iso; n.title = stampLong.format(new Date(iso)); }
+    return n;
+  };
+  const daysSince = (iso) => iso ? (Date.now() - new Date(iso)) / 864e5 : Infinity;
+  const intervalLabel = (s) => s < 60 ? `${s} seconds` : s < 3600 ? `${s / 60} minute${s === 60 ? '' : 's'}` : `${s / 3600} hour${s === 3600 ? '' : 's'}`;
+  const extLink = (text, href, cls) => {
+    const a = el('a', cls, text); a.href = href; a.target = '_blank'; a.rel = 'noopener';
+    a.append(el('span', 'sr-only', ' (opens GitHub in a new tab)'));
+    return a;
+  };
+  const chip = (cls, text, title) => { const c = el('span', 'chip ' + cls, text); c.title = title; return c; };
+  const isBot = (name) => /\[bot\]$|^(dependabot|renovate|github-actions|greenkeeper|nodejs-github-bot)/i.test(name || '');
+  const CI_TEXT = { passing: '● passing', failing: '● failing', pending: '● running' };
+  const CI_TITLE = { passing: 'Checks on the latest commit passed', failing: 'Checks on the latest commit failed', pending: 'Checks on the latest commit are still running' };
+  const DECISION = { approved: ['ok', 'Approved', 'Approved and not merged yet'], changes: ['warn', 'Changes requested', 'A reviewer asked for changes'], review: ['muted', 'Needs review', 'Nobody has reviewed this yet'] };
+  // A repository entry is "name", "owner/name", or either with "@branch". The same grammar the server accepts.
+  const SPEC_RE = /^(?:([A-Za-z0-9-]{1,39})\/)?([A-Za-z0-9._-]{1,100})(?:@([^\s@/][^\s@]{0,254}))?$/;
+  const parseSpec = (str, defaultOwner) => { const m = SPEC_RE.exec((str || '').trim()); return m ? { owner: m[1] || defaultOwner || '', name: m[2], branch: m[3] || null } : null; };
+  const specOf = (p, defaultOwner) => (p.owner && p.owner.toLowerCase() !== (defaultOwner || '').toLowerCase() ? p.owner + '/' : '') + p.name + (p.branch ? '@' + p.branch : '');
+  const sameRepo = (a, b) => a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+
+  // ----- per-browser preferences and modes -----
+  const PREF_KEY = 'repo-pulse:prefs';
+  const prefs = { theme: 'system', motion: false, hideBots: true, announce: true, notify: false, paused: false };
+  try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREF_KEY) || '{}')); } catch {}
+  const savePrefs = () => { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch {} };
+  const params = new URLSearchParams(location.search);
+  const tv = params.get('tv') === '1' || location.hash === '#tv';
+  if (tv) document.body.classList.add('tv');
+  function applyTheme() {
+    const t = params.get('theme') || (prefs.theme !== 'system' ? prefs.theme : tv ? 'dark' : '');
+    if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+    if (prefs.motion) document.documentElement.dataset.motion = 'reduce'; else delete document.documentElement.dataset.motion;
+  }
+  applyTheme();
+
+  let snap = null, cfg = null, prevCounts = {}, prevCi = {}, seenShas = new Set(), seenPrs = new Set(), firstDraw = true;
+  let connected = false, refreshingNow = false, paused = prefs.paused && !tv, pendingSnap = null, unseen = 0;
+
+  // ----- tabs -----
+  const TABS = ['dashboard', 'settings'];
+  function showTab(name) {
+    for (const t of TABS) {
+      const b = $('tab-' + t);
+      b.setAttribute('aria-selected', String(t === name));
+      b.tabIndex = t === name ? 0 : -1;
+      $('view-' + t).hidden = t !== name;
+    }
+    if (name === 'settings') openSettings();
+    if (!tv && location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+    setTitle();
+    maybeReload();
+  }
+  for (const t of TABS) $('tab-' + t).onclick = () => showTab(t);
+  document.querySelector('nav').onkeydown = (e) => {
+    const i = TABS.indexOf((document.activeElement?.id || '').replace('tab-', ''));
+    if (i < 0) return;
+    const next = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i + TABS.length - 1) % TABS.length
+      : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
+    if (next < 0) return;
+    e.preventDefault(); showTab(TABS[next]); $('tab-' + TABS[next]).focus();
+  };
+  window.onhashchange = () => { if (!tv) showTab(location.hash === '#settings' ? 'settings' : 'dashboard'); };
+  const currentTab = () => ($('view-settings').hidden ? 'dashboard' : 'settings');
+  function setTitle() {
+    const badge = unseen ? `(${unseen}) ` : '';
+    const where = currentTab() === 'settings' ? 'Settings · ' : '';
+    document.title = `${badge}${where}Repo Pulse${snap?.org ? ' · ' + snap.org : ''}`;
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { unseen = 0; setTitle(); } });
+
+  // ----- page version -----
+  // The server stamps every snapshot with a build id and this page with the id it was served with. When they differ
+  // (an upgrade, or an edited page) the page reloads itself, unless Settings has unsaved edits, in which case it
+  // waits and offers a Reload link instead.
+  const BUILD = document.querySelector('meta[name="build"]')?.content || '';
+  let newerBuild = null;
+  function reloadPage() { location.reload(); }
+  function checkBuild() {
+    if (!snap?.build || !BUILD || BUILD === '__BUILD__' || snap.build === BUILD) return;
+    newerBuild = snap.build;
+    maybeReload();
+  }
+  function maybeReload() {
+    if (!newerBuild) return;
+    let done = '';
+    try { done = sessionStorage.getItem('repo-pulse:reloaded-for') || ''; } catch {}
+    const busy = currentTab() === 'settings' && !$('dirty').hidden;
+    if (done === newerBuild || busy) { $('update-note').hidden = false; return; } // already tried once, or edits in progress
+    try { sessionStorage.setItem('repo-pulse:reloaded-for', newerBuild); } catch {}
+    reloadPage();
+  }
+  $('reload-now').onclick = () => { try { sessionStorage.removeItem('repo-pulse:reloaded-for'); } catch {} reloadPage(); };
+
+  // ----- live connection -----
+  function handleSnapshot(next) {
+    if (paused && snap?.fetchedAt) { pendingSnap = next; drawPause(); checkBuildFrom(next); return; }
+    snap = next; draw(); checkBuild();
+  }
+  function checkBuildFrom(next) { const keep = snap; snap = next; checkBuild(); snap = keep; }
+  function connect() {
+    const es = new EventSource('/api/events');
+    es.addEventListener('open', () => { connected = true; setConnection(); });
+    es.addEventListener('error', () => { connected = false; setConnection(); });
+    es.addEventListener('snapshot', (e) => handleSnapshot(JSON.parse(e.data)));
+    es.addEventListener('config', (e) => { cfg = { ...cfg, ...JSON.parse(e.data) }; $('org-label').textContent = cfg.org; });
+  }
+
+  // "Live" means data is flowing: the stream is open and the last GitHub fetch worked.
+  function setConnection() {
+    const dot = $('conn-dot'), text = $('conn-text');
+    if (!connected) { dot.className = 'dot down'; text.textContent = "Can't reach the Repo Pulse server, retrying…"; }
+    else if (snap?.tokenProblem) { dot.className = 'dot down'; text.textContent = 'Stopped: GitHub token problem'; }
+    else if (snap?.error) { dot.className = 'dot warn'; text.textContent = 'Live, but the last refresh failed'; }
+    else { dot.className = 'dot live'; text.textContent = 'Live'; }
+    dot.title = snap ? `Polling every ${intervalLabel(snap.pollSeconds)}` : '';
+    $('refresh-now').disabled = !connected || refreshingNow;
+  }
+
+  async function refreshNow() {
+    const b = $('refresh-now');
+    if (b.disabled) return;
+    refreshingNow = true; b.disabled = true; b.textContent = 'Refreshing…';
+    try {
+      const res = await fetch('/api/refresh', { method: 'POST' });
+      if (res.status === 429) {
+        const wait = Number(res.headers.get('retry-after')) || 5;
+        b.textContent = `Refreshed a moment ago`;
+        await new Promise((r) => setTimeout(r, wait * 1000));
+      }
+    } catch {}
+    finally { refreshingNow = false; b.textContent = 'Refresh now'; setConnection(); }
+  }
+  $('refresh-now').onclick = refreshNow;
+
+  function drawPause() {
+    const b = $('pause');
+    b.setAttribute('aria-pressed', String(paused));
+    b.textContent = paused ? (pendingSnap ? 'Resume updates (1 waiting)' : 'Resume updates') : 'Pause updates';
+  }
+  function togglePause() {
+    paused = !paused; prefs.paused = paused; savePrefs();
+    if (!paused && pendingSnap) { snap = pendingSnap; pendingSnap = null; draw(); }
+    drawPause();
+    announce(paused ? 'Live updates paused.' : 'Live updates resumed.');
+  }
+  $('pause').onclick = togglePause;
+  drawPause();
+
+  // ----- dashboard -----
+  function announce(text) {
+    if (!prefs.announce || !text) return;
+    $('announce').textContent = '';
+    setTimeout(() => { $('announce').textContent = text; }, 50);
+  }
+
+  function draw() {
+    if (!snap) return;
+    const hasData = Boolean(snap.fetchedAt);
+    const notes = []; // one polite sentence per change, read out together
+    $('org-label').textContent = snap.org || '';
+    $('mode').textContent = `Polling every ${intervalLabel(snap.pollSeconds)}` + (snap.webhooks ? ' · webhooks on' : '');
+    drawBudget();
+    drawError();
+    setConnection();
+    drawUpdated();
+    drawNotice();
+    setTitle();
+
+    const box = $('repos');
+    const focusKey = document.activeElement?.dataset?.key;
+    if (!snap.configuredRepos) {
+      box.replaceChildren(firstRunPanel());
+      $('feed').hidden = true;
+      firstDraw = false;
+      return;
+    }
+    if (!hasData) {
+      // The server sends whatever it has as soon as a page connects, which right after startup is nothing yet.
+      if (firstDraw) {
+        box.replaceChildren(el('div', 'empty', snap.error ? 'Nothing loaded yet. The next refresh will try again.' : 'Loading…'));
+        $('feed').hidden = true;
+      }
+      return;
+    }
+    box.replaceChildren(...snap.repos.map((r) => repoCard(r, notes)));
+
+    const rows = snap.repos.filter((r) => !r.error)
+      .flatMap((r) => r.commits.filter((c) => !prefs.hideBots || !isBot(c.author)).slice(0, 5).map((c) => ({ ...c, repo: cardName(r), key: r.key })))
+      .sort((a, b) => new Date(b.committedAt) - new Date(a.committedAt));
+    const body = $('feed-body');
+    body.replaceChildren();
+    const fresh = {};
+    for (const c of rows) {
+      const isNew = !firstDraw && !seenShas.has(c.key + c.sha);
+      if (isNew) fresh[c.repo] = (fresh[c.repo] || 0) + 1;
+      const tr = el('tr', isNew ? 'new' : '');
+      const shaTd = el('td'); const link = extLink(c.sha, c.url, 'sha'); link.dataset.key = `sha:${c.key}:${c.sha}`; shaTd.append(link);
+      const msg = el('td', 'msg'); msg.append(c.message);
+      if (isNew) msg.append(el('span', 'tag new', 'new'));
+      const inline = el('span', 'repo-inline'); inline.append(c.repo + ' · ', agoEl(c.committedAt)); msg.append(inline);
+      tr.append(shaTd, msg, el('td', 'repo', c.repo), el('td', 'who', c.author), agoEl(c.committedAt, 'td'));
+      tr.lastChild.classList.add('when');
+      body.append(tr);
+    }
+    $('feed').hidden = tv || !rows.length;
+    seenShas = new Set(snap.repos.filter((r) => !r.error).flatMap((r) => r.commits.map((c) => r.key + c.sha)));
+    const newCommits = Object.entries(fresh);
+    const newTotal = newCommits.reduce((n, [, c]) => n + c, 0);
+    if (newTotal) notes.unshift(`${newTotal} new commit${newTotal === 1 ? '' : 's'} in ${newCommits.map(([r]) => r).join(' and ')}.`);
+    if (!firstDraw && newTotal && document.hidden) unseen += newTotal;
+
+    if (focusKey) document.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
+    if (!firstDraw && notes.length) announce(notes.join(' '));
+    setTitle();
+    firstDraw = false;
+  }
+
+  function firstRunPanel() {
+    const box = el('div', 'empty steps');
+    box.append(el('h2', null, 'Set up Repo Pulse'));
+    const ol = el('ol');
+    const step = (ok, okText, todoText) => { const li = el('li', ok ? 'ok' : 'todo', ok ? '✓ ' + okText : '○ ' + todoText); ol.append(li); };
+    const tokenOk = !snap.tokenProblem && snap.tokenSource !== 'none';
+    step(tokenOk, `Token: ${tokenText(snap)}`, snap.tokenProblem || 'Token: none found. Set GITHUB_TOKEN or run gh auth login, then restart Repo Pulse.');
+    step(Boolean(snap.org), `Owner: ${snap.org}`, 'Owner: enter a GitHub organization or user in Settings, or add repositories as owner/name.');
+    step(Boolean(snap.configuredRepos), `Repositories: ${snap.configuredRepos} picked`, `Repositories: pick up to ${snap.maxRepos || 3} in Settings.`);
+    box.append(ol);
+    const b = el('button', 'linkbtn', 'Open Settings'); b.type = 'button'; b.onclick = () => showTab('settings');
+    box.append(b);
+    return box;
+  }
+  const tokenText = (s) => s.tokenSource === 'env' ? `GITHUB_TOKEN${s.viewer ? ' as @' + s.viewer : ''}`
+    : s.tokenSource === 'gh' ? `GitHub CLI login${s.viewer ? ' as @' + s.viewer : ''}`
+    : s.tokenSource === 'fixture' ? 'test fixture' : 'none';
+
+  // Repositories under the default owner show by bare name; others carry their owner.
+  const cardName = (r) => (r.owner && snap?.org && r.owner.toLowerCase() === snap.org.toLowerCase() ? r.name : (r.fullName || r.name));
+
+  function statTile(r, key, value, label, prefix, sub, notes) {
+    const s = el('div', 'stat');
+    const b = el('b', null, value == null ? '—' : prefix + fmt.format(value));
+    const id = r.key + ':' + key;
+    const prev = prevCounts[id];
+    if (prev !== undefined && value != null && prev !== value) {
+      const d = value - prev;
+      b.append(el('span', 'delta', (d > 0 ? '↑' : '↓') + fmt.format(Math.abs(d))));
+      b.classList.add('flash');
+      notes.push(`${cardName(r)} ${label.replace(' · 7d', ' in 7 days').toLowerCase()} ${prev} to ${value}.`);
+    }
+    if (value != null) prevCounts[id] = value;
+    s.append(b, el('span', 'label', label));
+    if (sub) s.append(typeof sub === 'string' ? el('span', 'sub', sub) : sub);
+    return s;
+  }
+
+  // Seven bars, oldest to newest: the shape of the week, not a chart.
+  const SVG = 'http://www.w3.org/2000/svg';
+  function spark(days, sampled) {
+    const w = 6, gap = 3, h = 18, max = Math.max(1, ...days);
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('class', 'spark');
+    svg.setAttribute('width', days.length * (w + gap) - gap);
+    svg.setAttribute('height', h);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', `Commits per day, oldest to newest: ${days.join(', ')}${sampled ? ' (from a sample of the busiest week)' : ''}`);
+    days.forEach((n, i) => {
+      const rect = document.createElementNS(SVG, 'rect');
+      const bh = n ? Math.max(2, Math.round((n / max) * h)) : 1;
+      rect.setAttribute('x', i * (w + gap)); rect.setAttribute('y', h - bh);
+      rect.setAttribute('width', w); rect.setAttribute('height', bh);
+      rect.setAttribute('fill', n ? 'var(--accent)' : 'var(--line-strong)');
+      rect.append(Object.assign(document.createElementNS(SVG, 'title'), { textContent: `${n} commit${n === 1 ? '' : 's'}` }));
+      svg.append(rect);
+    });
+    return svg;
+  }
+
+  function repoCard(r, notes) {
+    const card = el('article', 'card');
+    const top = el('h2', 'card-top');
+    const name = extLink('', r.url || '#', 'repo-link'); name.dataset.key = 'repo:' + r.key;
+    const shown = cardName(r);
+    if (shown.includes('/')) { name.prepend(el('span', 'owner', shown.slice(0, shown.lastIndexOf('/') + 1)), shown.slice(shown.lastIndexOf('/') + 1)); }
+    else name.prepend(shown);
+    top.append(name);
+    if (r.error) {
+      top.append(chip('bad', 'Unavailable', r.error));
+      card.append(top, el('p', 'help', r.error));
+      return card;
+    }
+    const chips = el('span', 'chips');
+    if (r.ci) chips.append(chip(r.ci === 'passing' ? 'ok' : r.ci === 'failing' ? 'bad' : 'muted', `${r.branch || 'main'} ${CI_TEXT[r.ci]}`, CI_TITLE[r.ci]));
+    const d = daysSince(r.lastCommitAt);
+    if (r.archived) chips.append(chip('muted', 'Archived', 'Archived on GitHub; it no longer takes changes'));
+    else if (d > 30) chips.append(chip('warn', 'Quiet', 'No commits for more than 30 days'));
+    else if (d > 7) chips.append(chip('muted', 'Slowing', 'Last commit 8 to 30 days ago'));
+    top.append(chips);
+    if (r.ci === 'failing') card.classList.add('ci-failing');
+    if (prevCi[r.key] && prevCi[r.key] !== r.ci && r.ci) {
+      notes.push(`${shown} checks are now ${r.ci}.`);
+      if (r.ci === 'failing') notify(`${shown}: checks failing on ${r.branch}`, 'The latest commit on the watched branch has failing checks.');
+    }
+    prevCi[r.key] = r.ci;
+
+    const p = r.prs || { total: r.openPrs, awaiting: 0, approved: 0, changes: 0, drafts: 0, waiting: [], newest: [] };
+    const ge = p.sampled ? '≥' : '';
+    const stats = el('div', 'stats');
+    stats.append(statTile(r, 'awaiting', p.awaiting, 'Needs review', ge, p.oldestAwaitingAt ? `oldest ${span(p.oldestAwaitingAt)}` : 'nothing waiting', notes));
+    stats.append(statTile(r, 'commits7d', r.commits7d, 'Commits · 7d', '', r.week?.days ? spark(r.week.days, r.week.sampled) : '', notes));
+    stats.append(statTile(r, 'merged7d', r.merged7d, 'Merged · 7d', '', '', notes));
+
+    const meta = el('div', 'meta');
+    meta.append(`${r.branch || 'no branch'} · last commit `, agoEl(r.lastCommitAt));
+    if (r.release) {
+      const rl = extLink(r.release.tag, r.release.url, null); rl.dataset.key = 'rel:' + r.key;
+      rl.title = (r.release.name || r.release.tag) + (r.release.prerelease ? ' (pre-release)' : '');
+      meta.append('· release ', rl, agoEl(r.release.publishedAt));
+    }
+    const counts = el('div', 'meta');
+    const parts = [`${fmt.format(p.total)} PR${p.total === 1 ? '' : 's'} open`];
+    if (p.approved) parts.push(`${ge}${p.approved} approved`);
+    if (p.changes) parts.push(`${ge}${p.changes} changes requested`);
+    if (p.drafts) parts.push(`${ge}${p.drafts} draft${p.drafts === 1 ? '' : 's'}`);
+    parts.push(`${fmt.format(r.openIssues)} issue${r.openIssues === 1 ? '' : 's'} open`);
+    if (r.untriaged) parts.push(`${fmt.format(r.untriaged)} untriaged`);
+    for (const [label, n] of Object.entries(r.labels || {})) if (n != null) parts.push(`${fmt.format(n)} ${label}`);
+    counts.textContent = parts.join(' · ');
+    counts.title = 'Untriaged: open issues with no label and no comments. Label counts are open issues with that label.' + (p.sampled ? ` Review counts cover the ${Math.min(15, p.total)} oldest open PRs.` : '');
+    card.append(top, stats, meta, counts);
+
+    if (p.waiting.length) {
+      const ul = el('ul', 'waiting');
+      ul.setAttribute('aria-label', 'Oldest open pull requests');
+      ul.append(el('li', 'caption', 'Oldest open'));
+      for (const pr of p.waiting) {
+        const li = el('li');
+        const link = extLink('#' + pr.number, pr.url, 'prnum'); link.dataset.key = `pr:${r.key}:${pr.number}`;
+        const title = el('span', 'msg', pr.title); title.title = pr.title;
+        const [cls, text, hint] = DECISION[pr.decision] || DECISION.review;
+        const who = el('span', 'who');
+        who.append(pr.author + (pr.firstTime ? ' · first PR here' : pr.outside ? ' · community' : ''), chip(cls, text, hint));
+        li.append(link, title, agoEl(pr.createdAt), who);
+        ul.append(li);
+      }
+      card.append(ul);
+    }
+    for (const pr of p.newest || []) {
+      const key = `${r.key}#${pr.number}`;
+      if (!firstDraw && !seenPrs.has(key)) {
+        notes.push(`New pull request in ${shown}: #${pr.number} ${pr.title} by ${pr.author}.`);
+        if (document.hidden) unseen++;
+        if (!pr.draft) notify(`${shown}: new PR #${pr.number}`, `${pr.title} · ${pr.author}`);
+      }
+      seenPrs.add(key);
+    }
+
+    const commits = r.commits.filter((c) => !prefs.hideBots || !isBot(c.author)).slice(0, tv ? 6 : 3);
+    if (commits.length) {
+      const mini = el('ul', 'mini');
+      mini.setAttribute('aria-label', 'Latest commits');
+      for (const c of commits) {
+        const li = el('li');
+        const link = extLink(c.sha, c.url, 'sha'); link.dataset.key = `mini:${r.key}:${c.sha}`;
+        li.append(link, el('span', 'msg', c.message), agoEl(c.committedAt));
+        li.title = c.message;
+        mini.append(li);
+      }
+      card.append(mini);
+    }
+    return card;
+  }
+
+  let notified = 0;
+  function notify(title, body) {
+    if (!prefs.notify || firstDraw || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (notified++ > 20) return; // never spam a wall display that was left for the weekend
+    try { new Notification(title, { body, tag: title }); } catch {}
+  }
+  setInterval(() => { notified = 0; }, 3600e3);
+
+  function drawBudget() {
+    const b = $('budget'), rl = snap?.rateLimit;
+    b.hidden = !rl;
+    if (!rl) return;
+    b.textContent = `API ${fmt.format(rl.remaining)} left`;
+    b.title = `GitHub GraphQL points left this hour (of ${fmt.format(rl.limit)}); each poll costs ${rl.cost ?? 1}. Resets ${rl.resetAt ? timeOnly.format(new Date(rl.resetAt)) : 'soon'}.`;
+    b.classList.toggle('low', rl.remaining < 500);
+  }
+
+  let lastErrorText = '';
+  function drawError() {
+    const banner = $('error-banner');
+    const hasData = Boolean(snap.fetchedAt);
+    let text = '';
+    if (snap.error) {
+      text = `Last refresh failed: ${snap.error.replace(/\.$/, '')}.`;
+      if (hasData) text += ' Showing the previous data.';
+      if (snap.nextPollAt && !snap.tokenProblem) text += ` Retrying at ${timeOnly.format(new Date(snap.nextPollAt))}.`;
+    }
+    banner.hidden = !text;
+    if (text !== lastErrorText) { banner.textContent = text; lastErrorText = text; } // only re-announce when the message changes
+  }
+
+  // One bar for conditions that are not errors but that a reader must not miss: stale data, a rate-limit pause, cached data.
+  function drawNotice() {
+    const n = $('notice');
+    let text = '', warnLevel = false;
+    const age = snap.fetchedAt ? Date.now() - new Date(snap.fetchedAt) : 0;
+    const stale = snap.fetchedAt && age > 2 * snap.pollSeconds * 1000 + 30000;
+    if (snap.pausedUntil && new Date(snap.pausedUntil) > Date.now()) {
+      text = `GitHub rate limit reached. Polling resumes at ${timeOnly.format(new Date(snap.pausedUntil))}.`; warnLevel = true;
+    } else if (stale) {
+      text = `Data is ${span(snap.fetchedAt)} old. Last successful refresh ${stamp.format(new Date(snap.fetchedAt))}.`; warnLevel = true;
+    } else if (snap.fromCache) {
+      text = `Showing data saved ${ago(snap.fetchedAt)} while the first refresh runs.`;
+    }
+    document.body.classList.toggle('stale', Boolean(stale));
+    n.className = 'notice' + (warnLevel ? ' warn' : '');
+    n.hidden = !text;
+    if (n.textContent !== text) n.textContent = text;
+  }
+
+  // The "Updated" stamp: a ticking relative age so the freshness reads at a glance, plus the wall-clock time of the
+  // last successful fetch in the viewer's local time zone.
+  function drawUpdated() {
+    const wrap = $('updated'), t = $('updated-time'), rel = $('updated-ago');
+    wrap.hidden = !snap?.fetchedAt;
+    if (wrap.hidden) return;
+    const d = new Date(snap.fetchedAt);
+    rel.dataset.iso = snap.fetchedAt;
+    rel.textContent = ago(snap.fetchedAt, true);
+    t.dateTime = snap.fetchedAt;
+    t.textContent = stamp.format(d);
+    t.title = stampLong.format(d);
+    checkStale();
+  }
+
+  let wasStale = false;
+  // Data older than two poll intervals (plus slack) means polling has stalled; say so rather than let the stamp sit there looking fine.
+  function checkStale() {
+    if (!snap?.fetchedAt) return;
+    const stale = Date.now() - new Date(snap.fetchedAt) > 2 * snap.pollSeconds * 1000 + 30000;
+    $('updated').classList.toggle('stale', stale);
+    if (stale !== wasStale) {
+      wasStale = stale;
+      drawNotice();
+      if (stale) announce(`Data is stale. Last update ${ago(snap.fetchedAt)}.`);
+    }
+  }
+
+  function tickAges() {
+    if (paused) return;
+    document.querySelectorAll('.ago[data-iso]').forEach((n) => { n.textContent = ago(n.dataset.iso, Boolean(n.dataset.fine)); });
+    checkStale();
+    if (snap?.pausedUntil) drawNotice();
+  }
+  setInterval(tickAges, 5000);
+
+  // ----- keyboard shortcuts -----
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.key === 'r') refreshNow();
+    else if (e.key === 'p') togglePause();
+    else if (e.key === 'd') showTab('dashboard');
+    else if (e.key === 's') showTab('settings');
+    else if (e.key === 't') { prefs.theme = { system: 'light', light: 'dark', dark: 'system' }[prefs.theme] || 'system'; savePrefs(); applyTheme(); $('pref-theme').value = prefs.theme; }
+  });
+
+  // ----- settings -----
+  // Picks live in the draft as {owner, name, branch} with an explicit owner, so changing the default owner never
+  // loses them: a pick under another owner is simply saved as owner/name.
+  let draft = null, draftBase = null, orgList = [], orgListOrg = null, orgListNote = '';
+  const labelsValue = () => $('labels').value.split(',').map((s) => s.trim()).filter(Boolean);
+  const settingsKey = (c) => JSON.stringify([c.org, c.repos, c.pollSeconds, c.includeArchived, c.issueLabels || []]);
+  const draftKey = () => { const org = $('org').value.trim(); return JSON.stringify([org, draft.repos.map((p) => specOf(p, org)), Number($('poll').value), $('archived').checked, labelsValue()]); };
+  const helpRow = (text) => { const li = el('li', 'help', text); li.style.padding = '12px'; return li; };
+  const adminHeaders = () => ($('admin').value ? { 'X-Admin-Token': $('admin').value } : {});
+
+  async function openSettings() {
+    const note = $('save-note');
+    let fresh;
+    try {
+      const res = await fetch('/api/config');
+      fresh = await res.json();
+      if (!res.ok) throw new Error(fresh.error);
+    } catch (err) {
+      note.className = 'note bad'; note.textContent = `Couldn't load settings: ${err.message}`;
+      return;
+    }
+    cfg = fresh;
+    $('max-repos').textContent = cfg.maxRepos;
+    $('max-labels').textContent = cfg.maxLabels || 5;
+    $('admin-wrap').hidden = !cfg.adminRequired;
+    $('config-path-wrap').hidden = !cfg.configPath;
+    $('config-path').textContent = cfg.configPath || '';
+    $('config-problem').hidden = !cfg.configProblem;
+    $('config-problem').textContent = cfg.configProblem || '';
+    $('token-line').textContent = cfg.tokenProblem ? cfg.tokenProblem
+      : cfg.tokenSource === 'gh' ? `Using your GitHub CLI login${cfg.viewer ? ' as @' + cfg.viewer : ''}. Set GITHUB_TOKEN to use a different token.`
+      : cfg.tokenSource === 'env' ? `Using the token from GITHUB_TOKEN${cfg.viewer ? ' as @' + cfg.viewer : ''}.`
+      : cfg.tokenSource === 'fixture' ? 'Using test fixture data.' : 'No GitHub token found.';
+    $('token-line').className = cfg.tokenProblem ? 'help warn' : 'help';
+    $('use-me').hidden = !cfg.viewer;
+    $('use-me').textContent = cfg.viewer ? `Use my account (@${cfg.viewer})` : '';
+    $('tv-link').textContent = `${location.origin}/?tv=1`;
+    const keptPoll = $('poll').value;
+    $('poll').replaceChildren(...(cfg.pollOptions || [cfg.pollSeconds]).map((s) => { const o = el('option', null, intervalLabel(s)); o.value = s; return o; }));
+    // Unsaved edits survive a glance at the dashboard. The draft restarts only the first time, after a save, or when the
+    // saved settings changed elsewhere.
+    if (!draft || settingsKey(cfg) !== draftBase) {
+      draft = { repos: cfg.repos.map((s) => parseSpec(s, cfg.org)).filter(Boolean) };
+      draftBase = settingsKey(cfg);
+      $('org').value = cfg.org;
+      $('poll').value = cfg.pollSeconds;
+      $('archived').checked = cfg.includeArchived;
+      $('labels').value = (cfg.issueLabels || []).join(', ');
+      note.className = 'note'; note.textContent = '';
+      orgList = []; orgListOrg = null;
+    } else {
+      $('poll').value = keptPoll || cfg.pollSeconds;
+    }
+    drawPrefs();
+    drawSelected();
+    const owner = $('org').value.trim();
+    if (!owner) {
+      $('picklist').replaceChildren(helpRow('Enter an organization or user above and press Load repositories, or add repositories by name.'));
+      return;
+    }
+    if (orgListOrg !== owner || !orgList.length) loadOrgList(false, owner); else drawPicklist();
+  }
+
+  async function loadOrgList(force, owner = $('org').value.trim()) {
+    const list = $('picklist');
+    if (!owner) { list.replaceChildren(helpRow('Enter an organization or user above first.')); return; }
+    list.replaceChildren(helpRow('Loading repositories…'));
+    $('load-owner').disabled = true;
+    try {
+      const q = new URLSearchParams({ owner, archived: $('archived').checked ? '1' : '0' });
+      if (force) q.set('refresh', '1');
+      const res = await fetch('/api/org-repos?' + q, { headers: adminHeaders() });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      orgList = body.repos; orgListOrg = body.org;
+      orgListNote = body.truncated ? `Showing the ${fmt.format(orgList.length)} most recently pushed of ${fmt.format(body.total)}. Add others by name.` : '';
+      drawPicklist();
+      announce(`${fmt.format(orgList.length)} repositories loaded for ${owner}.`);
+    } catch (err) {
+      orgList = []; orgListOrg = null; orgListNote = '';
+      list.replaceChildren(helpRow(`Couldn't load the repository list: ${err.message}`));
+    } finally { $('load-owner').disabled = false; drawDirty(); }
+  }
+  $('load-owner').onclick = () => loadOrgList(false);
+  $('org').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); loadOrgList(false); } };
+  $('org').onchange = () => { const o = $('org').value.trim(); if (o && o !== orgListOrg) loadOrgList(false, o); };
+  $('use-me').onclick = () => { $('org').value = cfg.viewer; drawDirty(); loadOrgList(false, cfg.viewer); };
+  $('reload-org').onclick = () => loadOrgList(true);
+  $('admin').onchange = () => { if (!orgList.length) loadOrgList(false); };
+
+  function addByName() {
+    const note = $('add-note');
+    const raw = $('add-repo').value;
+    const p = parseSpec(raw, $('org').value.trim() || orgListOrg || '');
+    let problem = '';
+    if (!raw.trim()) problem = 'Type a repository name first.';
+    else if (!p) problem = 'Use name, owner/name, or owner/name@branch (letters, digits, dots, hyphens and underscores).';
+    else if (!p.owner) problem = 'Enter an organization or user above, or write the repository as owner/name.';
+    else if (draft.repos.some((q) => sameRepo(q, p) && (q.branch || null) === p.branch)) problem = 'That repository is already picked.';
+    else if (draft.repos.length >= cfg.maxRepos) problem = `Limit of ${cfg.maxRepos} reached. Remove one to add another.`;
+    note.hidden = !problem; note.textContent = problem;
+    if (problem) return;
+    draft.repos.push(p);
+    $('add-repo').value = '';
+    drawSelected(); drawPicklist();
+    announce(`${specOf(p, '')} added.`);
+  }
+  $('add-btn').onclick = addByName;
+  $('add-repo').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addByName(); } };
+  $('add-repo').oninput = () => { $('add-note').hidden = true; };
+
+  let filterTimer = null;
+  $('repo-search').oninput = () => {
+    drawPicklist();
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => { const n = $('picklist').querySelectorAll('input').length; announce(`${n} of ${orgList.length} shown.`); }, 400);
+  };
+
+  function drawPicklist() {
+    if (!draft || !cfg) return;
+    const q = $('repo-search').value.trim().toLowerCase();
+    const full = draft.repos.length >= cfg.maxRepos;
+    $('limit-note').hidden = !full;
+    const list = $('picklist');
+    list.replaceChildren();
+    if (!orgListOrg) { list.append(helpRow(orgList.length ? '' : 'No list loaded. Enter an owner and press Load repositories.')); return; }
+    const shown = orgList.filter((r) => !q || r.name.toLowerCase().includes(q) || (r.description || '').toLowerCase().includes(q));
+    for (const r of shown.slice(0, 300)) {
+      const li = el('li');
+      const label = el('label');
+      const box = el('input'); box.type = 'checkbox'; box.value = r.name;
+      const here = { owner: orgListOrg, name: r.name };
+      box.checked = draft.repos.some((p) => sameRepo(p, here));
+      box.disabled = full && !box.checked;
+      box.onchange = () => {
+        draft.repos = box.checked ? [...draft.repos, { ...here, branch: null }] : draft.repos.filter((p) => !sameRepo(p, here));
+        drawSelected(); drawPicklist();
+        if (full && !box.checked) announce(`${draft.repos.length} of ${cfg.maxRepos} picked.`);
+      };
+      const text = el('div');
+      const name = el('div', 'name', r.name);
+      if (r.isPrivate) name.append(el('span', 'tag', 'private'));
+      if (r.isArchived) name.append(el('span', 'tag', 'archived'));
+      const desc = el('div', 'desc', `${r.description ? r.description + ' · ' : ''}pushed ${ago(r.pushedAt)}`);
+      desc.id = 'desc-' + r.name.replace(/[^A-Za-z0-9_-]/g, '_');
+      box.setAttribute('aria-describedby', desc.id);
+      text.append(name, desc);
+      label.append(box, text); li.append(label); list.append(li);
+    }
+    if (!shown.length) list.append(helpRow(orgList.length ? 'No repositories match.' : 'No repositories to show.'));
+    else if (shown.length > 300) list.append(helpRow(`Showing 300 of ${shown.length}. Type to narrow the list.`));
+    if (orgListNote) list.append(helpRow(orgListNote));
+  }
+
+  function drawSelected() {
+    if (!draft) return;
+    const box = $('selected');
+    const org = $('org').value.trim();
+    box.replaceChildren();
+    if (!draft.repos.length) box.append(el('span', 'help', 'None picked.'));
+    for (const p of draft.repos) {
+      const text = specOf(p, org);
+      const b = el('button', null, text + ' ×'); b.type = 'button';
+      b.title = `${p.owner}/${p.name}${p.branch ? ', branch ' + p.branch : ', default branch'}`;
+      b.setAttribute('aria-label', 'Remove ' + text);
+      b.onclick = () => {
+        draft.repos = draft.repos.filter((q) => q !== p);
+        drawSelected(); drawPicklist();
+        ($('selected').querySelector('button') || $('add-repo')).focus();
+      };
+      box.append(b);
+    }
+    drawDirty();
+  }
+
+  function drawDirty() {
+    if (!draft || !cfg) return;
+    $('dirty').hidden = draftKey() === settingsKey(cfg);
+  }
+  $('org').oninput = () => { drawSelected(); };
+  $('poll').onchange = drawDirty;
+  $('labels').oninput = drawDirty;
+  $('archived').onchange = () => { drawDirty(); if (orgListOrg) loadOrgList(false, orgListOrg); };
+
+  $('save').onclick = async () => {
+    if (!draft || !cfg) return;
+    const note = $('save-note');
+    const org = $('org').value.trim();
+    const next = { org, repos: draft.repos.map((p) => specOf(p, org)), pollSeconds: Number($('poll').value), includeArchived: $('archived').checked, issueLabels: labelsValue() };
+    $('save').disabled = true; note.className = 'note'; note.textContent = 'Saving…';
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...adminHeaders() },
+        body: JSON.stringify(next),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error);
+      cfg = { ...cfg, ...body };
+      draft = { repos: cfg.repos.map((s) => parseSpec(s, cfg.org)).filter(Boolean) };
+      draftBase = settingsKey(cfg);
+      $('org').value = cfg.org;
+      $('labels').value = (cfg.issueLabels || []).join(', ');
+      $('config-problem').hidden = true;
+      note.className = 'note ok'; note.textContent = `Saved. Polling every ${intervalLabel(cfg.pollSeconds)}; the dashboard is refreshing.`;
+      drawSelected();
+      if (cfg.org && orgListOrg !== cfg.org) loadOrgList(false, cfg.org); else drawPicklist();
+      maybeReload();
+    } catch (err) {
+      note.className = 'note bad'; note.textContent = `Not saved: ${err.message}`;
+    } finally { $('save').disabled = false; }
+  };
+
+  function drawPrefs() {
+    $('pref-theme').value = prefs.theme;
+    $('pref-motion').checked = prefs.motion;
+    $('pref-bots').checked = prefs.hideBots;
+    $('pref-announce').checked = prefs.announce;
+    $('pref-notify').checked = prefs.notify;
+  }
+  $('pref-theme').onchange = () => { prefs.theme = $('pref-theme').value; savePrefs(); applyTheme(); };
+  $('pref-motion').onchange = () => { prefs.motion = $('pref-motion').checked; savePrefs(); applyTheme(); };
+  $('pref-bots').onchange = () => { prefs.hideBots = $('pref-bots').checked; savePrefs(); if (snap) draw(); };
+  $('pref-announce').onchange = () => { prefs.announce = $('pref-announce').checked; savePrefs(); };
+  $('pref-notify').onchange = async () => {
+    prefs.notify = $('pref-notify').checked;
+    if (prefs.notify && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { prefs.notify = false; $('pref-notify').checked = false; }
+    }
+    savePrefs();
+  };
+
+  connect();
+  showTab(!tv && location.hash === '#settings' ? 'settings' : 'dashboard');
+</script>
+</body>
+</html>

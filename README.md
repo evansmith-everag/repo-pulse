@@ -1,0 +1,161 @@
+# Repo Pulse
+
+A live dashboard for up to three GitHub repositories under any organization or user your token can see. It answers, at a glance, whether code is moving and whether anything is waiting on you: pull requests that need review, failing checks on the default branch, what shipped last, and what landed in the past week. It's one Node.js file plus one HTML file, no dependencies, no build step, and it runs on Windows, macOS and Linux.
+
+## Download and run
+
+1. Install [Node.js](https://nodejs.org) 18 or newer.
+2. Download the latest `repo-pulse-vX.Y.Z.zip` from the Releases page and unzip it.
+3. Give it a GitHub token. Either set `GITHUB_TOKEN` (or `GH_TOKEN`), or sign in with the [GitHub CLI](https://cli.github.com) (`gh auth login`) and the server will use that login. See "Which token is used" below.
+4. Start it:
+   - Windows: double-click `start.cmd`
+   - macOS or Linux: open a terminal, `cd` into the unzipped folder, run `sh start.sh` (no `chmod` needed)
+   - anywhere: `node server.js` (or `npm start`)
+
+   The start scripts open http://127.0.0.1:4317 in your browser. `node server.js` prints the address. The console also prints which token it is using and for which account, for example `token: GitHub CLI login (gh auth token) as @you`.
+5. The dashboard shows three setup steps. Open **Settings**, enter a GitHub organization or user (or press "Use my account"), press **Load repositories**, pick up to three, and save.
+
+Settings are kept in `config.json` next to `server.js`; the last fetched data is kept in `snapshot.json` beside it so a restart shows data immediately. When you upgrade (or edit the page), every open dashboard notices the new version on its next update and reloads itself; a Settings tab with unsaved edits waits and shows a Reload link instead.
+
+### Repositories, owners and branches
+
+Each entry in the list is one of:
+
+- `name`: a repository under the organization or user you entered.
+- `owner/name`: a repository under any other owner, so one dashboard can mix repositories from several organizations and users.
+- `name@branch` or `owner/name@branch`: watch a branch other than the default. Commits, the checks chip, the week's shape and the last-commit age all follow that branch; PR, issue and merged counts are for the whole repository.
+
+Pick from the loaded list or type any of these into **Add by name**. The same grammar works in `config.json`:
+
+```json
+{ "org": "my-org", "repos": ["api", "web@release/2.x", "partner-org/sdk"], "issueLabels": ["bug"] }
+```
+
+## What the dashboard shows
+
+Each repository card:
+
+- **A checks chip** for the default branch: `main ● passing`, `● failing` (the card also gets a red top edge) or `● running`. Repos with no checks show no chip.
+- **Three numbers:** pull requests that **need review** (open, not draft, nobody has approved or asked for changes yet) with the age of the oldest one; **commits in the last 7 days** on the watched branch, with a seven-bar shape of the week beneath it; **pull requests merged in the last 7 days**. A `≥` means the review count covers only the 15 oldest open PRs.
+- **A meta line:** branch, age of the last commit, and the latest release with its age.
+- **A counts line:** PRs open, approved, changes requested, drafts, issues open, **untriaged** issues (open, no label, no comments), and the open-issue count for each label you list under **Issue labels to count** in Settings (up to five, for example `bug` or `help wanted`).
+- **Oldest open:** the three oldest non-draft PRs with author, review state, and a marker for first-time or community contributors.
+- **Quiet** (no commit in 30 days), **Slowing** (8 to 30 days), **Archived** or **Unavailable** chips when they apply. Active repos get no chip; silence is the good state.
+
+Below the cards, **Recent commits** merges up to five of the latest commits per repository, newest first. New rows are tagged "new" until the next update, and numbers that changed show their delta (for example `↑2`) until then.
+
+The **status strip** shows whether the page is live, "Updated 28s ago" with the exact local time beside it, the poll interval, the GitHub API budget left this hour, and Pause and Refresh buttons. If the data is older than two poll intervals an amber bar says how old it is and the cards dim. If GitHub rejects the token the dot turns red and a banner says what to do. If GitHub rate-limits the server the bar says when polling resumes.
+
+### TV mode
+
+Open `http://127.0.0.1:4317/?tv=1` on a wall display: the layout fills the screen, type is larger, the commit feed is replaced by commits inside each card, and the navigation is hidden. Add `&theme=light` or `&theme=dark` to force a theme; TV mode defaults to dark.
+
+### This browser
+
+The Settings tab has a "This browser" panel for preferences that live in the browser, not in the shared settings: theme (system, light, dark), reduce motion, hide commits by bots, announce changes to screen readers, and browser notifications for new pull requests and failing checks. Keyboard shortcuts: `r` refresh, `p` pause, `d` dashboard, `s` settings, `t` cycle theme.
+
+## Which token is used
+
+The server looks for a token in this order: `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token` from the GitHub CLI. It never shows the token anywhere, but it does tell you which source and which account are in use, in the console at startup, in the setup steps, and in the Settings tab.
+
+- **Public repositories only:** any token works; a classic token needs no scopes, a fine-grained token needs only the default public read access.
+- **Private repositories:** a classic token with the `repo` scope, or a fine-grained token with read access to Contents, Issues, Pull requests and Metadata for the repositories you pick. Fine-grained tokens expire; when one does, the dashboard stops polling and says so.
+- The `gh` login is convenient but usually carries more scope than this tool needs. If that bothers you, create a read-only fine-grained token and set `GITHUB_TOKEN`.
+
+The token is read once at startup, so restart after rotating it.
+
+## How it stays live
+
+- **Polling:** one GraphQL request per poll for all selected repositories, every `pollSeconds` (default 60; the Settings dropdown offers 15 s to 1 hour). Each poll costs about 1 point of the token's 5,000-points-per-hour GraphQL budget; the status strip shows what's left. GitHub answers in about 3 to 5 seconds for busy repositories.
+- **Backoff:** after a failed poll the interval doubles (with jitter) up to 30 minutes. A rate-limit answer pauses polling until the time GitHub gives. A rejected token stops polling until you restart with a new one; "Refresh now" still retries.
+- **Push to browser:** open pages get each new snapshot over server-sent events (`/api/events`). If the page loses the server it says so and reconnects on its own.
+- **Webhooks (optional):** set `WEBHOOK_SECRET` and point a GitHub webhook (content type `application/json`; events: push, issues, pull requests, pull request reviews, check suites, workflow runs, statuses, releases) at `https://<host>/webhook`. The server checks the signature, ignores replayed delivery ids, and refreshes within a few seconds. Webhooks need the server to be reachable from GitHub, so they only work on a web server, not on localhost.
+
+## Endpoints for scripts
+
+- `GET /api/snapshot` returns the same JSON the page receives, with an `ETag`; send `If-None-Match` to get a `304` when nothing changed.
+- `GET /healthz` returns `200 {ok: true, …}` when the token works and data has been fetched, otherwise `503`. Use it for Docker health checks or uptime monitors.
+
+## Environment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `4317` | Listen port |
+| `HOST` | `127.0.0.1` | Bind address. Keep it on loopback behind a reverse proxy; use `0.0.0.0` only when nothing fronts it |
+| `GITHUB_TOKEN` / `GH_TOKEN` | from `gh` | GitHub token; see "Which token is used" |
+| `ADMIN_TOKEN` | none | If set, saving settings and listing an owner's repositories require it (entered in the Settings tab) |
+| `WEBHOOK_SECRET` | none | Enables `POST /webhook` |
+| `ALLOWED_HOSTS` | none | Comma-separated host names that may reach the server besides localhost, for example `pulse.example.com` behind a proxy |
+| `TRUST_PROXY` | off | Set `1` behind a proxy that rewrites `Host`; the server then reads `X-Forwarded-Host` for its same-origin check |
+| `MAX_REPOS` | `3` | How many repositories can be picked (1 to 9). Three is the glanceable number; more repositories mean a slower poll |
+| `REPO_PULSE_CONFIG` | `./config.json` | Config file location |
+| `REPO_PULSE_CACHE` | `snapshot.json` next to the config | Where the last fetched data is kept |
+| `REPO_PULSE_FIXTURE` | none | A JSON file of canned rows served instead of GitHub (used by the tests; see `test/fixture.json`) |
+
+`config.json` can be edited by hand while the server is stopped. If it can't be parsed, the server starts with defaults in memory, leaves the file alone, and shows the problem in the Settings tab; the next save rewrites the file.
+
+## Running it for a team
+
+Keep the server on loopback and put a reverse proxy with HTTPS (and ideally your SSO) in front of it. Set `ADMIN_TOKEN` so viewers cannot change settings or browse the owner's full repository list.
+
+Caddy keeps the `Host` header and streams server-sent events as is:
+
+```
+pulse.example.com {
+    reverse_proxy 127.0.0.1:4317
+}
+```
+
+Run the server with `ALLOWED_HOSTS=pulse.example.com`. For nginx, which rewrites `Host` by default, either add `proxy_set_header Host $host;` or run with `TRUST_PROXY=1`, and add `proxy_buffering off;` so the event stream is not buffered.
+
+A systemd unit for a Linux box, Raspberry Pi or NAS (the `gh` fallback will not exist there, so set the token in the environment file):
+
+```
+[Unit]
+Description=Repo Pulse
+After=network-online.target
+
+[Service]
+DynamicUser=yes
+StateDirectory=repo-pulse
+EnvironmentFile=/etc/repo-pulse.env
+Environment=REPO_PULSE_CONFIG=/var/lib/repo-pulse/config.json
+ExecStart=/usr/bin/node /opt/repo-pulse/server.js
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+with `/etc/repo-pulse.env` (mode 0600) holding `GITHUB_TOKEN=…`, `ADMIN_TOKEN=…` and `ALLOWED_HOSTS=…`. On Windows, Task Scheduler with "run at log on" pointing at `start.cmd` does the same job.
+
+### Docker
+
+```sh
+docker build -t repo-pulse .
+docker run -d --name repo-pulse -e GITHUB_TOKEN=… -p 127.0.0.1:4317:4317 -v repo-pulse-data:/data repo-pulse
+```
+
+The image listens on all interfaces inside the container (there is no loopback to bind to from outside), so publish the port on `127.0.0.1` as above or put a proxy in front, and set `ADMIN_TOKEN` if other people can reach it. Settings and the data cache live in the `/data` volume. The container reports health through `/healthz`. There is no `gh` inside the image, so the token must come from the environment.
+
+## Who can see what, and what leaves your machine
+
+Anyone who can reach the server sees the dashboard data for the chosen repositories, fetched with the server's token. With `ADMIN_TOKEN` set, changing settings and browsing an owner's full repository list (names, descriptions, push times for every repository the token can see) need the token; without it, anyone who can reach the page can do both.
+
+When bound to localhost (the default) the server rejects requests whose `Host` header isn't a loopback address or in `ALLOWED_HOSTS`, and it rejects state-changing requests that a browser marks as cross-site. That keeps other websites open in your browser from reading or changing anything. Responses carry a strict content security policy and the page uses system fonts, so the only network traffic is to `api.github.com`.
+
+## Tests
+
+```sh
+npm test              # both suites; or npm run test:server / npm run test:ui
+```
+
+Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the live runs. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; it needs Node 22 or newer, and `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs both on every push using the workflow's own token.
+
+## Releases
+
+Push a tag like `v1.2.0` and the release workflow zips `server.js`, `public/`, the start scripts, `package.json`, `README.md` and `LICENSE` into `repo-pulse-v1.2.0.zip`, writes `SHA256SUMS`, and attaches both to a GitHub Release with generated notes. The `Dockerfile` builds from the same files.
+
+## License
+
+Public domain, under the Unlicense. See `LICENSE`.

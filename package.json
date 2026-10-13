@@ -1,0 +1,15 @@
+{
+  "name": "repo-pulse",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live dashboard for a few GitHub repositories: what needs review, checks on the branch, what shipped, what landed this week. One Node file, no dependencies.",
+  "license": "Unlicense",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/verify-server.mjs && node test/verify-ui.mjs",
+    "test:server": "node test/verify-server.mjs",
+    "test:ui": "node test/verify-ui.mjs"
+  }
+}

@@ -1,0 +1,11 @@
+config.json
+snapshot.json
+test
+.github
+dist
+*.zip
+*.md
+.gitignore
+.dockerignore
+start.cmd
+start.sh
