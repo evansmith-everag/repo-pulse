@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="text-scale" content="scale">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'sha256-ST674q0miJJGsIM6U4mMaXyAnQNg2wiB1CYbWgUNxTk='; script-src 'sha256-cf6bhWfBDBOOflV93ydEjXVUXVyWW20cW+FkY9/bDb8=' 'sha256-NtovQ/NMpKsO7pM/2x/c7+EOXZrxWruN6FZDFavLE3I='; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'sha256-J+AwLk5F2td12sBfCEbt2/TtRuQoXcT6UOkEvmVj8Pc='; script-src 'sha256-cf6bhWfBDBOOflV93ydEjXVUXVyWW20cW+FkY9/bDb8=' 'sha256-NtovQ/NMpKsO7pM/2x/c7+EOXZrxWruN6FZDFavLE3I='; base-uri 'none'; form-action 'none'">
 <title>Repo Pulse: a live dashboard for a few GitHub repositories</title>
 <meta name="description" content="A live dashboard for up to three GitHub repositories: pull requests that need review, checks on the branch you watch, the latest release, and what landed this week. One Node.js file plus one HTML file, no dependencies, public domain.">
 <meta property="og:title" content="Repo Pulse">
@@ -29,8 +29,10 @@
     --accent-l: #2f6b4f; --ok-l: #2f7d4f; --warn-l: #8f5313; --bad-l: #b8433a;
     --bg-d: #141815; --panel-d: #1c211e; --line-d: #2f3631; --line-strong-d: #6b766f; --fg-d: #e6ebe7; --muted-d: #98a39c;
     --accent-d: #7cc39c; --ok-d: #6fcf97; --warn-d: #e3a35a; --bad-d: #ef8579;
-    --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l);
-    --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l);
+    /* Every token follows color-scheme, so the theme toggle is one line and native controls follow too. */
+    --bg: light-dark(var(--bg-l), var(--bg-d)); --panel: light-dark(var(--panel-l), var(--panel-d)); --line: light-dark(var(--line-l), var(--line-d));
+    --line-strong: light-dark(var(--line-strong-l), var(--line-strong-d)); --fg: light-dark(var(--fg-l), var(--fg-d)); --muted: light-dark(var(--muted-l), var(--muted-d));
+    --accent: light-dark(var(--accent-l), var(--accent-d)); --ok: light-dark(var(--ok-l), var(--ok-d)); --warn: light-dark(var(--warn-l), var(--warn-d)); --bad: light-dark(var(--bad-l), var(--bad-d));
     --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
     --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
@@ -38,17 +40,13 @@
     color-scheme: light dark;
     accent-color: var(--accent);
   }
-  /* Browsers without light-dark(): follow the system preference, then the manual toggle. */
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
-  }
-  :root[data-theme="light"] { color-scheme: light; --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l); --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l); }
-  :root[data-theme="dark"] { color-scheme: dark; --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
-  @supports (color: light-dark(white, black)) {
-    :root, :root[data-theme] {
-      --bg: light-dark(var(--bg-l), var(--bg-d)); --panel: light-dark(var(--panel-l), var(--panel-d)); --line: light-dark(var(--line-l), var(--line-d));
-      --line-strong: light-dark(var(--line-strong-l), var(--line-strong-d)); --fg: light-dark(var(--fg-l), var(--fg-d)); --muted: light-dark(var(--muted-l), var(--muted-d));
-      --accent: light-dark(var(--accent-l), var(--accent-d)); --ok: light-dark(var(--ok-l), var(--ok-d)); --warn: light-dark(var(--warn-l), var(--warn-d)); --bad: light-dark(var(--bad-l), var(--bad-d));
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  /* Browsers without light-dark() (before mid-2024) follow the system preference; the toggle needs light-dark(). */
+  @supports not (color: light-dark(white, black)) {
+    :root { --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l); --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l); }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
     }
   }
 
@@ -58,7 +56,7 @@
   body { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.55 var(--font-body); -webkit-text-size-adjust: 100%; }
   p { text-wrap: pretty; }
   /* Everything after the hero screenshot is below the fold; lay it out when it comes near. */
-  #answers, #features, #how, #settings, #tv, #privacy, #run, #faq { content-visibility: auto; contain-intrinsic-size: auto none auto 40rem; }
+  section:not(.hero) { content-visibility: auto; contain-intrinsic-size: auto none auto 40rem; }
   .wrap { max-width: 72rem; margin-inline: auto; padding-inline: 16px; }
   a { color: var(--accent); text-underline-offset: 2px; }
   a:hover { text-decoration-thickness: 2px; }
@@ -84,7 +82,7 @@
   p { margin: 0 0 12px; }
   p:last-child { margin-bottom: 0; }
   .prose, .sect-head { max-width: 62ch; }
-  .prose.team { margin-top: 28px; }
+  .grid + .prose { margin-top: 28px; }
   .sect-head { margin-bottom: 28px; }
   .sect-head p { color: var(--muted); }
   section { padding-block: 56px; }
@@ -271,7 +269,7 @@
       </article>
       <article class="card">
         <h3>Velocity table</h3>
-        <p>Per repository with a totals row, arrows against the seven days before: <strong>Merged</strong>, <strong>Opened</strong>, <strong>Cycle time</strong> (median open-to-merge), <strong>First review</strong> (median open-to-first-review), <strong>Commits</strong>, <strong>People</strong> (and the busiest one's share; 75 percent or more is highlighted), <strong>Issues +/−</strong>, <strong>Stale PRs</strong> (older than 14 days), <strong>CI failed</strong> out of total runs, and <strong>Alerts</strong>. Bots are left out of the people column and the medians. Hover a heading for its definition.</p>
+        <p>Per repository with a totals row, arrows against the seven days before: <strong>Merged</strong>, <strong>Opened</strong>, <strong>Cycle time</strong> (median open-to-merge), <strong>First review</strong> (median open-to-first-review), <strong>Commits</strong>, <strong>People</strong> (and the busiest one's share; 75 percent or more is highlighted), <strong>Issues +/−</strong>, <strong>Stale PRs</strong> (older than 14 days), <strong>CI failed</strong> out of total runs, and <strong>Alerts</strong>. Bots are left out of the people column and the medians. Hover a heading for its definition, or open the definitions list under the table.</p>
       </article>
       <article class="card">
         <h3>Recent commits, live</h3>
@@ -393,7 +391,7 @@ docker run -d --name repo-pulse --restart unless-stopped -e GITHUB_TOKEN=… -p 
         <p>Settings and the cache live in the <code>/data</code> volume; the container reports health through <code>/healthz</code>. There is no <code>gh</code> inside the image, so the token comes from the environment.</p>
       </article>
     </div>
-    <div class="prose team">
+    <div class="prose">
       <h3>For a team</h3>
       <p>Keep the server on loopback and put a reverse proxy with HTTPS (and ideally your SSO) in front of it. Set <code>ADMIN_TOKEN</code> so viewers cannot change settings, and run with <code>ALLOWED_HOSTS</code> naming the public host. Caddy keeps the <code>Host</code> header and streams server-sent events as is:</p>
 <pre><code>pulse.example.com {

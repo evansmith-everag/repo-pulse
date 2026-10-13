@@ -76,7 +76,7 @@ Below the cards, a **Velocity · last 7 days** table gives the numbers a manager
 - **CI failed:** failed out of total GitHub Actions runs on the watched branch, followed by any workflow whose latest run failed.
 - **Alerts:** open Dependabot security alerts.
 
-Bots (`dependabot`, `renovate`, anything ending in `[bot]` or `-bot`) are left out of the people column and the two medians, because a dependency bot is otherwise the "top contributor" and an auto-merge bot has a one-minute cycle time. Hover a column heading for its definition. The table is hidden in TV mode and can be turned off per browser (or with the `v` key).
+Bots (`dependabot`, `renovate`, anything ending in `[bot]` or `-bot`) are left out of the people column and the two medians, because a dependency bot is otherwise the "top contributor" and an auto-merge bot has a one-minute cycle time. Hover a column heading for its definition, or open "Column definitions" under the table. The table is hidden in TV mode and can be turned off per browser (or with the `v` key).
 
 Below the cards, **Recent commits** merges up to five of the latest commits per repository, newest first. New rows are tagged "new" until the next update, and numbers that changed show their delta (for example `↑2`) until then.
 
@@ -200,7 +200,7 @@ When bound to localhost (the default) the server rejects requests whose `Host` h
 npm test              # both suites; or npm run test:server / npm run test:ui
 ```
 
-Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the live runs. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; set `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs both suites on Node 22 (the oldest supported line) and Node 26 for every push to `main` and every pull request, using the workflow's own token.
+Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the live runs. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; set `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs the server suite on Node 22 (the oldest supported line, taken from `engines` in `package.json`) and Node 26, and the browser suite once on Node 26, for every push to `main` and every pull request, using the workflow's own token.
 
 ## Releases
 

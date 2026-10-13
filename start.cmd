@@ -1,10 +1,10 @@
 @echo off
-rem Starts Repo Pulse and opens it in your browser. Needs Node.js 22 or newer on the PATH.
+rem Starts Repo Pulse and opens it in your browser. Needs Node.js on the PATH (the server says which version it needs).
 setlocal
 cd /d "%~dp0"
 where node >nul 2>nul
 if errorlevel 1 (
-  echo Node.js 22 or newer is required. Download it from https://nodejs.org and run this again.
+  echo Node.js is required. Download it from https://nodejs.org and run this again.
   pause
   exit /b 1
 )

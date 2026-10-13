@@ -26,6 +26,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Browser tests
+        if: matrix.node == 26 # the page does not depend on the Node version; one run saves API budget and minutes
         run: npm run test:ui
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

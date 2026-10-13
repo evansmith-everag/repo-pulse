@@ -45,9 +45,10 @@ async function post(pathname, body, headers = {}) {
   return { status: res.status, json, headers: res.headers };
 }
 const getSnapshot = async () => (await fetch(`${BASE}/api/snapshot`)).json();
-async function waitForFetch(ms = 30000) {
+// Polls the snapshot until a fetch has finished (or the given condition holds), then returns it.
+async function waitForFetch(ms = 30000, until = (s) => s.fetchedAt || s.error) {
   const t0 = Date.now();
-  while (Date.now() - t0 < ms) { const s = await getSnapshot(); if (s.fetchedAt || s.error) return s; await sleep(300); }
+  while (Date.now() - t0 < ms) { const s = await getSnapshot(); if (until(s)) return s; await sleep(300); }
   return getSnapshot();
 }
 
@@ -103,15 +104,20 @@ try {
     const csp = page.headers.get('content-security-policy') || '';
     ok('security headers on the page', page.headers.get('x-content-type-options') === 'nosniff' && /frame-ancestors 'none'/.test(csp) && page.headers.get('referrer-policy') === 'no-referrer');
     const html = await page.text();
-    const sha = (t) => `'sha256-${createHash('sha256').update(t).digest('base64')}'`;
-    const inlineScripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => sha(m[1]));
-    const inlineStyles = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => sha(m[1]));
-    ok('the policy allows the inline script and stylesheet by hash, with no unsafe-inline', inlineScripts.length === 1 && inlineScripts.every((h) => csp.includes(h)) && inlineStyles.every((h) => csp.includes(h)) && !/unsafe-inline/.test(csp) && /default-src 'none'/.test(csp) && /object-src 'none'/.test(csp) && /require-trusted-types-for 'script'/.test(csp), csp.slice(0, 160));
+    const inlineHashes = (doc, tag) => [...doc.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi'))].map((m) => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
+    const scripts = inlineHashes(html, 'script'), styles = inlineHashes(html, 'style');
+    ok('the policy allows the served page\'s inline script and stylesheet by hash', scripts.length === 1 && styles.length === 1 && csp.includes(scripts[0]) && csp.includes(styles[0]), csp.slice(0, 160));
+    ok('the policy has no unsafe-inline and locks down the rest', !/unsafe-inline/.test(csp) && /default-src 'none'/.test(csp) && /object-src 'none'/.test(csp) && /require-trusted-types-for 'script'/.test(csp), csp);
     ok('the page has no inline style attributes (they would be refused by the policy)', !/\sstyle="/.test(html));
     const site = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
     const siteCsp = site.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] || '';
-    const siteScripts = [...site.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => sha(m[1]));
-    ok('the product page\'s own policy lists the hashes of its inline scripts', siteScripts.length > 0 && siteScripts.every((h) => siteCsp.includes(h)) && !/unsafe-inline/.test(siteCsp.split(';').find((d) => /script-src/.test(d)) || ''), siteCsp.slice(0, 160));
+    const siteHashes = [...inlineHashes(site, 'script'), ...inlineHashes(site, 'style')];
+    ok('the product page\'s own policy lists the hashes of its inline script and style (re-run the hash step after editing them)', siteHashes.length === 3 && siteHashes.every((h) => siteCsp.includes(h)) && !/unsafe-inline/.test(siteCsp), `expected ${siteHashes.join(' ')} in: ${siteCsp}`);
+    const ci = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const floor = Number(JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).engines.node.match(/\d+/)[0]);
+    const matrix = (ci.match(/node:\s*\[([^\]]+)\]/)?.[1] || '').split(',').map(Number);
+    const dockerMajor = Number(readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8').match(/FROM node:(\d+)/)?.[1]);
+    ok('CI tests the Node floor from package.json and the image uses at least that', Math.min(...matrix) === floor && dockerMajor >= floor, JSON.stringify({ floor, matrix, dockerMajor }));
     ok('cross-site Origin on POST is 403', (await post('/api/config', good, { Origin: 'http://evil.example' })).status === 403);
     ok('Sec-Fetch-Site: cross-site on POST is 403', (await post('/api/refresh', '', { 'Sec-Fetch-Site': 'cross-site' })).status === 403);
     ok('same-origin Origin on POST is accepted', (await post('/api/config', good, { Origin: BASE })).status === 200);
@@ -293,7 +299,7 @@ try {
     s = await startServer({ REPO_PULSE_FIXTURE: FIXTURE, MAX_REPOS: '5' }, fixtureConfig, { cache: false });
     const cfg = await (await fetch(`${BASE}/api/config`)).json();
     ok('MAX_REPOS raises the limit', cfg.maxRepos === 5 && (await post('/api/config', { org: 'example', repos: ['alpha', 'beta', 'gamma', 'other/delta'], pollSeconds: 60, issueLabels: ['bug'] })).status === 200, String(cfg.maxRepos));
-    const multi = await waitForFetch(5000);
+    const multi = await waitForFetch(5000, (snap) => snap.repos?.some((r) => r.name === 'delta')); // the settings refresh lands after the reply
     const delta = multi.repos?.find((r) => r.name === 'delta') || {};
     const alpha2 = multi.repos?.find((r) => r.name === 'alpha') || {};
     ok('a repository under another owner keeps its owner', delta.owner === 'other' && delta.fullName === 'other/delta' && delta.key === 'other/delta', JSON.stringify([delta.owner, delta.fullName, delta.key]));

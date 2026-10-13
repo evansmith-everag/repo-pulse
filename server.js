@@ -19,6 +19,12 @@ const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
 let PKG = {};
 try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
 const VERSION = PKG.version || '0.0.0';
+// package.json's engines field is the one place the Node floor is defined; refuse to run below it with a plain message.
+const NODE_FLOOR = Number((PKG.engines?.node || '').match(/\d+/)?.[0]) || 0;
+if (Number(process.versions.node.split('.')[0]) < NODE_FLOOR) {
+  console.error(`Repo Pulse needs Node.js ${NODE_FLOOR} or newer; this is ${process.versions.node}. Download it from https://nodejs.org`);
+  process.exit(1);
+}
 const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
 const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0' && Boolean(UPDATE_REPO);
 const UPDATE_API = process.env.UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
@@ -117,8 +123,11 @@ async function loadPage() {
   try {
     const st = await stat(PAGE_PATH);
     if (st.mtimeMs !== page.mtimeMs) {
-      const html = await readFile(PAGE_PATH, 'utf8');
-      page = { html, mtimeMs: st.mtimeMs, hash: createHash('sha256').update(html).digest('hex').slice(0, 10), csp: cspFor(html) };
+      const raw = await readFile(PAGE_PATH, 'utf8');
+      const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10);
+      // The build id is stamped here, so the policy is computed from exactly the text that is served.
+      const html = raw.replace('__BUILD__', `${SERVER_HASH}.${hash}`);
+      page = { html, mtimeMs: st.mtimeMs, hash, csp: cspFor(html) };
     }
   } catch (err) {
     warn(`could not read ${PAGE_PATH}: ${err.message}`);
@@ -1004,8 +1013,7 @@ const server = http.createServer(async (req, res) => {
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/index.html')) {
       if (req.method === 'HEAD') { res.writeHead(200, { ...baseHeaders(), 'Content-Type': MIME['.html'] }); return res.end(); }
-      const { html } = await loadPage();
-      return send(res, 200, html.replace('__BUILD__', buildId()), MIME['.html']);
+      return send(res, 200, (await loadPage()).html, MIME['.html']);
     }
     send(res, 404, { error: 'Not found' });
   } catch (err) {

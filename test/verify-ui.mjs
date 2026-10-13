@@ -45,7 +45,7 @@ const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...ser
 const fixServer = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(FIX_PORT), REPO_PULSE_CONFIG: fixCfg, REPO_PULSE_CACHE: path.join(TMP, 'fix-cache.json'), REPO_PULSE_FIXTURE: path.join(ROOT, 'test', 'fixture.json'), MAX_REPOS: '4' }, stdio: 'ignore' });
 // --disable-dev-shm-usage keeps Chromium alive in containers with a tiny /dev/shm; --remote-allow-origins lets a
 // non-browser client open the DevTools socket. The browser's own output is kept so a failure to start explains itself.
-const browser = spawn(browserPath, [headlessFlag, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-allow-origins=*', `--remote-debugging-port=${DBG}`, `--user-data-dir=${path.join(TMP, 'profile')}`, '--window-size=1280,1000', 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+const browser = spawn(browserPath, [headlessFlag, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-allow-origins=*', `--remote-debugging-port=${DBG}`, `--user-data-dir=${path.join(TMP, 'profile')}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
 let browserLog = '';
 browser.stdout.on('data', (d) => (browserLog += d));
 browser.stderr.on('data', (d) => (browserLog += d));
@@ -85,8 +85,9 @@ try {
   const text = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.textContent.trim() ?? null`);
   const hidden = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.hidden ?? null`);
   const chips = () => evalJs(`document.querySelectorAll('#selected button').length`);
-  // Live updates arrive through handleSnapshot, which cross-fades via a view transition and resolves when the DOM is in place.
-  const snapshot = (expr) => evalJs(`(async () => { await handleSnapshot(${expr}); })()`);
+  // Live updates arrive through handleSnapshot, which resolves once the new DOM is in place (evalJs awaits promises).
+  const snapshot = (expr) => evalJs(`handleSnapshot(${expr})`);
+  const setTheme = (v) => evalJs(`var t = document.getElementById('pref-theme'); t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event('change'));`);
   const nav = async (url) => { await send('Page.navigate', { url }); await sleep(400); };
 
   await send('Page.enable');
@@ -133,7 +134,6 @@ try {
   ok('document title names the owner', (await evalJs('document.title')) === 'Repo Pulse · example', await evalJs('document.title'));
   ok('each card is a heading for screen readers', (await evalJs(`document.querySelectorAll('.card h2').length`)) === 4);
 
-  ok('the browser cross-fades live updates (view transitions supported here)', await evalJs(`typeof document.startViewTransition === 'function'`));
   // auto-reload: a snapshot with a different build id reloads the page (stubbed here) unless Settings has edits
   await evalJs(`window.__reloaded = 0; reloadPage = () => { window.__reloaded++; }; sessionStorage.removeItem('repo-pulse:reloaded-for');`);
   await snapshot(`{ ...snap, build: 'test.newer' }`);
@@ -147,7 +147,8 @@ try {
   ok('a narrow velocity table stacks each row into a labelled card', await until(`getComputedStyle(document.querySelector('#velocity-body td')).display === 'block' && getComputedStyle(document.querySelector('#velocity thead')).display === 'none'`, 3000));
   await evalJs(`document.querySelector('#velocity .tablebox').style.removeProperty('width')`);
   ok('the velocity table returns to columns when wide again', await until(`getComputedStyle(document.querySelector('#velocity-body td')).display === 'table-cell'`, 3000), await evalJs(`JSON.stringify({ td: getComputedStyle(document.querySelector('#velocity-body td')).display, box: document.querySelector('#velocity .tablebox').clientWidth, viewport: innerWidth })`));
-  ok('the column definitions are available without hovering', (await evalJs(`document.querySelectorAll('#velocity .defs dt').length`)) === 9);
+  ok('the column definitions are built from the headings and available without hovering', (await evalJs(`document.querySelectorAll('#velocity .defs dt').length`)) === 10 && (await evalJs(`document.querySelector('#velocity .defs dd').textContent`)) === (await evalJs(`document.querySelector('#velocity thead th[title]').title`)));
+  ok('stacked cells carry their column heading as a label', (await evalJs(`document.querySelector('#velocity-body td').dataset.label`)) === 'Merged');
   ok('the page has a main landmark and a live announcer', (await evalJs(`Boolean(document.querySelector('main') && document.getElementById('announce').getAttribute('aria-live'))`)));
 
   // stale state: age the stamp and run the ticker
@@ -163,12 +164,11 @@ try {
   // keyboard shortcut and theme preference
   await evalJs(`document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))`);
   ok('"s" opens Settings', !(await hidden('#view-settings')));
-  await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'dark'; t.dispatchEvent(new Event('change'));`);
+  await setTheme('light');
+  ok('switching to light flips the tokens through color-scheme', (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(245, 246, 243)');
+  await setTheme('dark');
   ok('theme preference applies and persists', (await evalJs(`document.documentElement.dataset.theme`)) === 'dark' && /"theme":"dark"/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
   ok('the override drives color-scheme, so native controls and light-dark() tokens follow it', (await evalJs(`getComputedStyle(document.documentElement).colorScheme`)) === 'dark' && (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(20, 24, 21)');
-  await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'light'; t.dispatchEvent(new Event('change'));`);
-  ok('switching to light flips the tokens through color-scheme', (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(245, 246, 243)');
-  await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'dark'; t.dispatchEvent(new Event('change'));`);
   await evalJs(`var b = document.getElementById('pref-bots'); b.checked = false; b.dispatchEvent(new Event('change'));`);
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }))`);
   ok('turning off the bot filter shows bot commits', await until(`/dependabot/.test(document.getElementById('feed-body').textContent)`, 3000));
