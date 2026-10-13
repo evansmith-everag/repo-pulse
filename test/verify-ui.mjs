@@ -116,7 +116,8 @@ try {
   await evalJs(`handleSnapshot({ ...snap, update: { ...snap.update, available: false } });`);
   ok('the bar disappears when nothing is available', await hidden('#update-bar'));
   ok('failing checks mark the card and chip', await evalJs(`document.querySelector('.card.ci-failing .chip.bad')?.textContent`) === 'main ● failing');
-  ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /oldest 12d/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
+  // The fixture's dates are fixed, so the age keeps growing: accept any compact duration rather than today's value.
+  ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /^oldest \d+(m|h|d|mo|y)$/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
   ok('release appears in the meta line', /release v2\.3\.0/.test(await text('.card.ci-failing .meta')), await text('.card.ci-failing .meta'));
   ok('counts line lists approved, changes, drafts and untriaged', /1 approved · 1 changes requested · 1 draft · 42 issues open · 3 untriaged/.test(await evalJs(`document.querySelectorAll('.card.ci-failing .meta')[1].textContent`)));
   ok('oldest-open list has three PRs with state chips', (await evalJs(`document.querySelectorAll('.card.ci-failing .waiting li:not(.caption)').length`)) === 3 && (await evalJs(`[...document.querySelectorAll('.card.ci-failing .waiting .chip')].map(c => c.textContent).join('|')`)) === 'Needs review|Approved|Changes requested');
