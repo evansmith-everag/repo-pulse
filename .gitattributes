@@ -1,0 +1,5 @@
+# The server hashes the page's inline code for its Content-Security-Policy the way browsers do, on LF text, so keep
+# text files LF everywhere. Batch files stay CRLF, which cmd.exe parses most reliably.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.png binary

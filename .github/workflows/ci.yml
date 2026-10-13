@@ -8,13 +8,22 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch supersedes a run still going, which also keeps the live GitHub runs within budget.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 26] # the oldest supported line and the current one
+        include:
+          - node: 22 # the oldest supported line (engines in package.json): the server suite against live GitHub
+            live: true
+          - node: 26 # the current line: the server suite in fixture mode, plus the browser suite (live)
+            ui: true
     name: test (Node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -24,9 +33,10 @@ jobs:
       - name: Server tests
         run: npm run test:server
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEST_LIVE: ${{ matrix.live && '1' || '0' }}
+          GITHUB_TOKEN: ${{ matrix.live && secrets.GITHUB_TOKEN || '' }}
       - name: Browser tests
-        if: matrix.node == 26 # the page does not depend on the Node version; one run saves API budget and minutes
+        if: matrix.ui
         run: npm run test:ui
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

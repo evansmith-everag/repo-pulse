@@ -19,12 +19,12 @@ const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
 let PKG = {};
 try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
 const VERSION = PKG.version || '0.0.0';
-// package.json's engines field is the one place the Node floor is defined; refuse to run below it with a plain message.
-const NODE_FLOOR = Number((PKG.engines?.node || '').match(/\d+/)?.[0]) || 0;
-if (Number(process.versions.node.split('.')[0]) < NODE_FLOOR) {
-  console.error(`Repo Pulse needs Node.js ${NODE_FLOOR} or newer; this is ${process.versions.node}. Download it from https://nodejs.org`);
-  process.exit(1);
-}
+// package.json's engines field is the one place the Node floor is defined. Below it the server warns and carries on,
+// because an install that updated itself from an older release must still start; the updater refuses a release whose
+// floor this Node does not meet.
+const nodeFloor = (pkg) => Number((pkg.engines?.node || '').match(/\d+/)?.[0]) || 0;
+const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
+if (NODE_MAJOR < nodeFloor(PKG)) console.error(`Repo Pulse v${VERSION} supports Node.js ${nodeFloor(PKG)} or newer; this is ${process.versions.node}. It may still run, but install a current Node.js from https://nodejs.org`);
 const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
 const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0' && Boolean(UPDATE_REPO);
 const UPDATE_API = process.env.UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
@@ -123,7 +123,8 @@ async function loadPage() {
   try {
     const st = await stat(PAGE_PATH);
     if (st.mtimeMs !== page.mtimeMs) {
-      const raw = await readFile(PAGE_PATH, 'utf8');
+      // Browsers hash inline code after newline normalisation, so a CRLF checkout is served (and hashed) as LF text.
+      const raw = (await readFile(PAGE_PATH, 'utf8')).replace(/\r\n?/g, '\n');
       const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10);
       // The build id is stamped here, so the policy is computed from exactly the text that is served.
       const html = raw.replace('__BUILD__', `${SERVER_HASH}.${hash}`);
@@ -702,6 +703,7 @@ async function installUpdate() {
     for (const need of REQUIRED_IN_RELEASE) if (!files.some((f) => f.target === need)) throw new Error(`the release zip has no ${need}`);
     const newPkg = JSON.parse(files.find((f) => f.target === 'package.json').data.toString('utf8'));
     if (!newer(newPkg.version, VERSION)) throw new Error(`the zip contains v${newPkg.version}, not newer than v${VERSION}`);
+    if (NODE_MAJOR < nodeFloor(newPkg)) throw new Error(`v${newPkg.version} needs Node.js ${nodeFloor(newPkg)} or newer; this is ${process.versions.node}. Install a current Node.js first.`);
     const backup = path.join(ROOT, '.previous');
     await mkdir(path.join(backup, 'public'), { recursive: true });
     for (const f of files) {

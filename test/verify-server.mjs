@@ -16,9 +16,12 @@ const FIXTURE = path.join(ROOT, 'test', 'fixture.json');
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'repo-pulse-test-'));
 const PORT = Number(process.env.TEST_PORT || 4399);
 const BASE = `http://127.0.0.1:${PORT}`;
+const LIVE = process.env.TEST_LIVE !== '0'; // the runs against live GitHub need a token; CI gives them to one Node line
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = '') => { if (cond) { pass++; console.log(`  PASS ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}`); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The sha256 source expressions for a document's inline <script> or <style> bodies, as a Content-Security-Policy lists them.
+const inlineHashes = (doc, tag) => [...doc.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi'))].map((m) => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
 let current = null;
 
 async function startServer(env, configText, { cache = true, root = ROOT } = {}) {
@@ -91,8 +94,21 @@ const baseConfig = JSON.stringify(good);
 const fixtureConfig = JSON.stringify({ org: 'example', repos: ['alpha', 'beta', 'gamma'], pollSeconds: 60, includeArchived: false });
 
 try {
-  console.log('== Run 1: defaults, live GitHub ==');
+  console.log('== Repository consistency (no server) ==');
   {
+    const site = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+    const siteCsp = site.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] || '';
+    ok('the product page keeps its script and stylesheet in files under a self-only policy (no hash to go stale)', !/<style|<script>|\sstyle="/.test(site) && /script-src 'self'/.test(siteCsp) && /style-src 'self'/.test(siteCsp) && !/unsafe-inline/.test(siteCsp) && existsSync(path.join(ROOT, 'docs', 'site.js')) && existsSync(path.join(ROOT, 'docs', 'site.css')), siteCsp);
+    const ci = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const floor = Number(JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).engines.node.match(/\d+/)[0]);
+    const matrix = [...ci.matchAll(/^\s*- node: (\d+)/gm)].map((m) => Number(m[1]));
+    const dockerMajor = Number(readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8').match(/FROM node:(\d+)/)?.[1]);
+    ok('CI tests the Node floor from package.json, runs the browser suite on one line, and the image meets the floor', matrix.length >= 2 && Math.min(...matrix) === floor && /ui: true/.test(ci) && /if: matrix\.ui/.test(ci) && dockerMajor >= floor, JSON.stringify({ floor, matrix, dockerMajor }));
+  }
+
+  if (!LIVE) console.log('TEST_LIVE=0: the runs against live GitHub are skipped');
+  if (LIVE) {
+    console.log('== Run 1: defaults, live GitHub ==');
     const s = await startServer({}, baseConfig, { cache: false });
     const r1 = await rawRequest('GET //[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
     ok('malformed request line gets 400 and server survives', /HTTP\/1.1 400/.test(r1) && (await fetch(`${BASE}/api/config`)).ok, r1.slice(0, 60));
@@ -104,20 +120,10 @@ try {
     const csp = page.headers.get('content-security-policy') || '';
     ok('security headers on the page', page.headers.get('x-content-type-options') === 'nosniff' && /frame-ancestors 'none'/.test(csp) && page.headers.get('referrer-policy') === 'no-referrer');
     const html = await page.text();
-    const inlineHashes = (doc, tag) => [...doc.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi'))].map((m) => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
     const scripts = inlineHashes(html, 'script'), styles = inlineHashes(html, 'style');
     ok('the policy allows the served page\'s inline script and stylesheet by hash', scripts.length === 1 && styles.length === 1 && csp.includes(scripts[0]) && csp.includes(styles[0]), csp.slice(0, 160));
     ok('the policy has no unsafe-inline and locks down the rest', !/unsafe-inline/.test(csp) && /default-src 'none'/.test(csp) && /object-src 'none'/.test(csp) && /require-trusted-types-for 'script'/.test(csp), csp);
     ok('the page has no inline style attributes (they would be refused by the policy)', !/\sstyle="/.test(html));
-    const site = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
-    const siteCsp = site.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] || '';
-    const siteHashes = [...inlineHashes(site, 'script'), ...inlineHashes(site, 'style')];
-    ok('the product page\'s own policy lists the hashes of its inline script and style (re-run the hash step after editing them)', siteHashes.length === 3 && siteHashes.every((h) => siteCsp.includes(h)) && !/unsafe-inline/.test(siteCsp), `expected ${siteHashes.join(' ')} in: ${siteCsp}`);
-    const ci = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
-    const floor = Number(JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).engines.node.match(/\d+/)[0]);
-    const matrix = (ci.match(/node:\s*\[([^\]]+)\]/)?.[1] || '').split(',').map(Number);
-    const dockerMajor = Number(readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8').match(/FROM node:(\d+)/)?.[1]);
-    ok('CI tests the Node floor from package.json and the image uses at least that', Math.min(...matrix) === floor && dockerMajor >= floor, JSON.stringify({ floor, matrix, dockerMajor }));
     ok('cross-site Origin on POST is 403', (await post('/api/config', good, { Origin: 'http://evil.example' })).status === 403);
     ok('Sec-Fetch-Site: cross-site on POST is 403', (await post('/api/refresh', '', { 'Sec-Fetch-Site': 'cross-site' })).status === 403);
     ok('same-origin Origin on POST is accepted', (await post('/api/config', good, { Origin: BASE })).status === 200);
@@ -311,8 +317,8 @@ try {
     await s.stop();
   }
 
-  console.log('== Run 8: owners, branches and labels against live GitHub ==');
-  {
+  if (LIVE) {
+    console.log('== Run 8: owners, branches and labels against live GitHub ==');
     const s = await startServer({}, JSON.stringify({ org: 'github', repos: ['gitignore', 'nodejs/undici@main', 'docs@no-such-branch'], pollSeconds: 60, issueLabels: ['bug'] }), { cache: false });
     const snap = await waitForFetch();
     const rows = Object.fromEntries((snap.repos || []).map((r) => [r.key, r]));
@@ -345,6 +351,7 @@ try {
     const install = path.join(TMP, 'install');
     mkdirSync(path.join(install, 'public'), { recursive: true });
     for (const f of ['server.js', 'public/index.html', 'package.json']) copyFileSync(path.join(ROOT, f), path.join(install, f));
+    writeFileSync(path.join(install, 'public', 'index.html'), readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8').replace(/\r?\n/g, '\r\n')); // as a CRLF checkout would have it
     const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
     const zip = buildZip([
       ['repo-pulse/', null],
@@ -354,12 +361,21 @@ try {
       ['repo-pulse/start.cmd', Buffer.from('@echo off\r\necho a launcher the update must not touch\r\n'), false],
     ]);
     const sums = `${createHash('sha256').update(zip).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
+    const tallZip = buildZip([
+      ['repo-pulse/', null],
+      ['repo-pulse/server.js', readFileSync(path.join(ROOT, 'server.js')), true],
+      ['repo-pulse/public/index.html', readFileSync(path.join(ROOT, 'public', 'index.html')), true],
+      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0', engines: { node: '>=99' } }, null, 2)), false],
+    ]);
+    const tallSums = `${createHash('sha256').update(tallZip).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
     const release = { tag_name: 'v99.0.0', html_url: 'http://example.invalid/releases/v99.0.0', published_at: '2026-10-13T00:00:00Z', body: 'Test release', assets: [{ name: 'repo-pulse-v99.0.0.zip', browser_download_url: `http://127.0.0.1:${FEED}/zip` }, { name: 'SHA256SUMS', browser_download_url: `http://127.0.0.1:${FEED}/sums` }] };
     const feed = http.createServer((req, res) => {
       if (req.url === '/latest') return res.end(JSON.stringify(release));
       if (req.url === '/zip') return res.end(zip);
       if (req.url === '/sums') return res.end(sums);
       if (req.url === '/badsums') return res.end(`${'0'.repeat(64)}  repo-pulse-v99.0.0.zip\n`);
+      if (req.url === '/tallzip') return res.end(tallZip);
+      if (req.url === '/tallsums') return res.end(tallSums);
       res.statusCode = 404; res.end();
     });
     await new Promise((r) => feed.listen(FEED, '127.0.0.1', r));
@@ -369,6 +385,8 @@ try {
       let u = {};
       for (let i = 0; i < 50 && !u.checkedAt; i++) { u = await (await fetch(`${BASE}/api/update`)).json(); if (!u.checkedAt) await sleep(200); }
       ok('startup check finds the newer release', u.available === true && u.latest === '99.0.0' && u.current === pkg.version && u.canAdminister === true, JSON.stringify(u));
+      const crlfPage = await fetch(`${BASE}/`), crlfHtml = await crlfPage.text();
+      ok('a CRLF checkout is served as LF text, so the policy hashes match what the browser computes', !crlfHtml.includes('\r') && (crlfPage.headers.get('content-security-policy') || '').includes(inlineHashes(crlfHtml, 'script')[0]), (crlfPage.headers.get('content-security-policy') || '').slice(0, 120));
       const snap = await getSnapshot();
       ok('the snapshot carries the version and the update state', snap.version === pkg.version && snap.update?.available === true, JSON.stringify([snap.version, snap.update]));
       // a corrupt checksum file must stop the install before anything is written
@@ -376,6 +394,13 @@ try {
       await post('/api/update/check', '');
       const bad = await post('/api/update', '');
       ok('a checksum mismatch refuses the update and leaves the files alone', bad.status === 502 && /SHA256SUMS/.test(bad.json?.error || '') && JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === pkg.version, JSON.stringify(bad.json));
+      // a release whose Node floor this process does not meet must be refused before anything is written
+      release.assets[0].browser_download_url = `http://127.0.0.1:${FEED}/tallzip`;
+      release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/tallsums`;
+      await post('/api/update/check', '');
+      const tall = await post('/api/update', '');
+      ok('a release that needs a newer Node.js is refused and the files are left alone', tall.status === 502 && /Node\.js 99/.test(tall.json?.error || '') && JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === pkg.version, JSON.stringify(tall.json));
+      release.assets[0].browser_download_url = `http://127.0.0.1:${FEED}/zip`;
       release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/sums`;
       await post('/api/update/check', '');
       const inst = await post('/api/update', '');

@@ -73,7 +73,14 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((r) => (ws.onopen = r));
   let seq = 0; const waiting = new Map();
-  ws.onmessage = (m) => { const msg = JSON.parse(m.data); if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); } };
+  // Uncaught exceptions, policy violations and Trusted Types refusals only show in the page's console, so collect them.
+  const pageErrors = [];
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+    else if (msg.method === 'Runtime.exceptionThrown') pageErrors.push(msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text);
+    else if (msg.method === 'Log.entryAdded' && msg.params.entry.level === 'error' && msg.params.entry.source !== 'network') pageErrors.push(`${msg.params.entry.source}: ${msg.params.entry.text}`);
+  };
   const send = (method, params = {}) => new Promise((resolve) => { const id = ++seq; waiting.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); });
   // Snippets run in the page's global scope, so use `var` (or expressions) rather than top-level `const`/`let`.
   const evalJs = async (expression) => {
@@ -91,6 +98,8 @@ try {
   const nav = async (url) => { await send('Page.navigate', { url }); await sleep(400); };
 
   await send('Page.enable');
+  await send('Runtime.enable');
+  await send('Log.enable');
   // The window-size flag is not always honoured by a headless browser; pin the viewport so layout checks are deterministic.
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
 
@@ -257,6 +266,8 @@ try {
   ok('hash change switches the view', await until(`!document.getElementById('view-dashboard').hidden`, 2000));
   ok('inactive tab is out of the Tab order', (await evalJs(`document.getElementById('tab-settings').tabIndex`)) === -1);
   ok('focus survives a redraw', await evalJs(`(() => { var a = document.querySelector('.card .repo-link'); a.focus(); draw(); return document.activeElement === document.querySelector('.card .repo-link'); })()`));
+  await sleep(300); // let any late console entries arrive
+  ok('the page raised no uncaught errors, policy violations or Trusted Types refusals', pageErrors.length === 0, pageErrors.slice(0, 5).join(' | '));
 } catch (err) {
   console.log('ERROR ' + err.message); fail++;
 } finally {
