@@ -108,6 +108,13 @@
   @keyframes rowin { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
   .tag { font-size: .7rem; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; margin-left: 6px; vertical-align: middle; }
   .tag.new { color: var(--accent); border-color: var(--accent); }
+  .velocity td.num, .velocity th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .velocity .d { font-size: .78rem; color: var(--muted); margin-left: 4px; }
+  .velocity .d.up { color: var(--ok); } .velocity .d.down { color: var(--warn); }
+  .velocity .warnc { color: var(--warn); font-weight: 500; } .velocity .bad { color: var(--bad); font-weight: 600; }
+  .velocity tfoot td { font-weight: 600; border-bottom: 0; }
+  .velocity th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .meta.ci.failing { color: var(--bad); }
   @media (max-width: 40rem) {
     td.who, th.who, td.repo, th.repo, td.when, th.when { display: none; }
     td.msg { min-width: 0; }
@@ -196,6 +203,29 @@
     <div class="notice" id="notice" role="status" hidden></div>
     <div class="banner" id="error-banner" role="alert" hidden></div>
     <div class="repos" id="repos"><div class="empty">Loading…</div></div>
+    <section class="feed velocity" id="velocity" aria-labelledby="velocity-title" hidden>
+      <h2 id="velocity-title">Velocity · last 7 days</h2>
+      <p class="help">Arrows compare with the 7 days before. Cycle time and first review are medians over this week's merged pull requests, bots excluded. CI counts GitHub Actions runs on the watched branch. Hover a column heading for its definition.</p>
+      <div class="tablebox">
+        <table>
+          <thead><tr>
+            <th scope="col">Repo</th>
+            <th scope="col" class="num" title="Pull requests merged in the last 7 days; the arrow compares with the 7 days before">Merged</th>
+            <th scope="col" class="num" title="Pull requests opened in the last 7 days">Opened</th>
+            <th scope="col" class="num" title="Median time from opening to merge for pull requests merged this week, bots excluded">Cycle time</th>
+            <th scope="col" class="num" title="Median time from opening to the first review, for pull requests merged this week that got a review, bots excluded">First review</th>
+            <th scope="col" class="num" title="Commits on the watched branch in the last 7 days; the arrow compares with the 7 days before">Commits</th>
+            <th scope="col" class="num" title="People who committed this week (bots excluded) and the share of commits by the busiest one">People</th>
+            <th scope="col" class="num" title="Issues opened and closed in the last 7 days, and the net change to the backlog">Issues +/−</th>
+            <th scope="col" class="num" title="Open, non-draft pull requests older than 14 days">Stale PRs</th>
+            <th scope="col" class="num" title="GitHub Actions runs on the watched branch in the last 7 days: failed out of total, then any workflow whose latest run failed">CI failed</th>
+            <th scope="col" class="num" title="Open Dependabot security alerts, shown when the token may read them">Alerts</th>
+          </tr></thead>
+          <tbody id="velocity-body"></tbody>
+          <tfoot><tr id="velocity-total"></tr></tfoot>
+        </table>
+      </div>
+    </section>
     <section class="feed" id="feed" aria-labelledby="feed-title" hidden>
       <h2 id="feed-title">Recent commits</h2>
       <p class="help">Up to five of the latest commits on each repository's watched branch, merged newest first.</p>
@@ -256,7 +286,8 @@
           <label class="check"><input type="checkbox" id="pref-bots"> Hide commits by bots</label>
           <label class="check"><input type="checkbox" id="pref-announce"> Announce changes to screen readers</label>
           <label class="check"><input type="checkbox" id="pref-notify"> Browser notification for new PRs and failing checks</label>
-          <p class="help">TV mode for a wall display: open <code id="tv-link"></code>. Keyboard: <kbd>r</kbd> refresh, <kbd>p</kbd> pause, <kbd>d</kbd> dashboard, <kbd>s</kbd> settings, <kbd>t</kbd> theme.</p>
+          <label class="check"><input type="checkbox" id="pref-velocity"> Show the velocity table</label>
+          <p class="help">TV mode for a wall display: open <code id="tv-link"></code>. Keyboard: <kbd>r</kbd> refresh, <kbd>p</kbd> pause, <kbd>d</kbd> dashboard, <kbd>s</kbd> settings, <kbd>t</kbd> theme, <kbd>v</kbd> velocity table.</p>
         </div>
       </div>
     </div>
@@ -317,7 +348,7 @@
 
   // ----- per-browser preferences and modes -----
   const PREF_KEY = 'repo-pulse:prefs';
-  const prefs = { theme: 'system', motion: false, hideBots: true, announce: true, notify: false, paused: false };
+  const prefs = { theme: 'system', motion: false, hideBots: true, announce: true, notify: false, paused: false, velocity: true };
   try { Object.assign(prefs, JSON.parse(localStorage.getItem(PREF_KEY) || '{}')); } catch {}
   const savePrefs = () => { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch {} };
   const params = new URLSearchParams(location.search);
@@ -330,7 +361,7 @@
   }
   applyTheme();
 
-  let snap = null, cfg = null, prevCounts = {}, prevCi = {}, seenShas = new Set(), seenPrs = new Set(), firstDraw = true;
+  let snap = null, cfg = null, prevCounts = {}, prevCi = {}, prevFailing = {}, seenShas = new Set(), seenPrs = new Set(), firstDraw = true;
   let connected = false, refreshingNow = false, paused = prefs.paused && !tv, pendingSnap = null, unseen = 0;
 
   // ----- tabs -----
@@ -467,7 +498,7 @@
     const focusKey = document.activeElement?.dataset?.key;
     if (!snap.configuredRepos) {
       box.replaceChildren(firstRunPanel());
-      $('feed').hidden = true;
+      $('feed').hidden = true; $('velocity').hidden = true;
       firstDraw = false;
       return;
     }
@@ -475,7 +506,7 @@
       // The server sends whatever it has as soon as a page connects, which right after startup is nothing yet.
       if (firstDraw) {
         box.replaceChildren(el('div', 'empty', snap.error ? 'Nothing loaded yet. The next refresh will try again.' : 'Loading…'));
-        $('feed').hidden = true;
+        $('feed').hidden = true; $('velocity').hidden = true;
       }
       return;
     }
@@ -500,6 +531,7 @@
       body.append(tr);
     }
     $('feed').hidden = tv || !rows.length;
+    drawVelocity();
     seenShas = new Set(snap.repos.filter((r) => !r.error).flatMap((r) => r.commits.map((c) => r.key + c.sha)));
     const newCommits = Object.entries(fresh);
     const newTotal = newCommits.reduce((n, [, c]) => n + c, 0);
@@ -625,6 +657,29 @@
     counts.title = 'Untriaged: open issues with no label and no comments. Label counts are open issues with that label.' + (p.sampled ? ` Review counts cover the ${Math.min(15, p.total)} oldest open PRs.` : '');
     card.append(top, stats, meta, counts);
 
+    // CI failures on the watched branch this week, with the workflows whose latest run failed.
+    const ci = r.ciRuns;
+    if (ci && (ci.failed7d > 0 || ci.failing.length)) {
+      const line = el('div', 'meta ci' + (ci.failing.length ? ' failing' : ''));
+      line.append(`checks 7d: ${fmt.format(ci.runs7d - ci.failed7d)} passed · `);
+      if (ci.lastFailure) {
+        const fl = extLink(`${fmt.format(ci.failed7d)} failed`, ci.lastFailure.url, null);
+        fl.dataset.key = 'ci:' + r.key; fl.title = `Latest failure: ${ci.lastFailure.name}`;
+        line.append(fl);
+      } else line.append(`${fmt.format(ci.failed7d)} failed`);
+      if (ci.failing.length) line.append(` · failing now: ${ci.failing.slice(0, 2).join(', ')}${ci.failing.length > 2 ? ` +${ci.failing.length - 2}` : ''}`);
+      card.append(line);
+      const wasFailing = prevFailing[r.key];
+      if (wasFailing !== undefined && ci.failing.length && wasFailing !== ci.failing.join('|')) notes.push(`${shown}: ${ci.failing.join(', ')} failing on ${r.branch}.`);
+    }
+    prevFailing[r.key] = ci ? ci.failing.join('|') : '';
+    if (r.alerts > 0) {
+      const al = el('div', 'meta ci failing');
+      al.textContent = `${fmt.format(r.alerts)} open security alert${r.alerts === 1 ? '' : 's'}`;
+      al.title = 'Open Dependabot security alerts';
+      card.append(al);
+    }
+
     if (p.waiting.length) {
       const ul = el('ul', 'waiting');
       ul.setAttribute('aria-label', 'Oldest open pull requests');
@@ -665,6 +720,71 @@
       card.append(mini);
     }
     return card;
+  }
+
+  // ----- velocity table -----
+  const hoursText = (h) => h == null ? '—' : h < 1 ? '<1h' : h < 48 ? `${Math.round(h)}h` : `${(h / 24).toFixed(1).replace(/\.0$/, '')}d`;
+  // "63 ↑12": the value with its change against the previous week; up is good for throughput columns.
+  function withDelta(cur, prev) {
+    const frag = document.createDocumentFragment();
+    frag.append(cur == null ? '—' : fmt.format(cur));
+    if (cur != null && prev != null && cur !== prev) {
+      const d = cur - prev;
+      const s = el('span', 'd ' + (d > 0 ? 'up' : 'down'), (d > 0 ? '↑' : '↓') + fmt.format(Math.abs(d)));
+      s.title = `${fmt.format(prev)} the week before`;
+      frag.append(s);
+    }
+    return frag;
+  }
+  function drawVelocity() {
+    const sec = $('velocity');
+    const repos = (snap?.repos || []).filter((r) => !r.error && r.metrics);
+    sec.hidden = tv || !prefs.velocity || !repos.length;
+    if (sec.hidden) return;
+    const body = $('velocity-body');
+    body.replaceChildren();
+    const cell = (content, cls, title) => {
+      const td = el('td', 'num' + (cls ? ' ' + cls : ''));
+      if (content instanceof Node) td.append(content); else td.textContent = content;
+      if (title) td.title = title;
+      return td;
+    };
+    const tot = { merged: 0, mergedPrev: 0, prevKnown: true, opened: 0, commits: 0, commitsPrev: 0, cPrevKnown: true, io: 0, ic: 0, stale: 0, failed: 0, runs: 0, ciKnown: false, alerts: 0, alertsKnown: false };
+    for (const r of repos) {
+      const m = r.metrics, c = r.ciRuns, people = r.contributors;
+      const tr = el('tr');
+      const nameTd = el('td'); nameTd.append(cardName(r)); tr.append(nameTd);
+      tr.append(cell(withDelta(r.merged7d, m.mergedPrev7d)));
+      tr.append(cell(m.prsOpened7d == null ? '—' : fmt.format(m.prsOpened7d)));
+      tr.append(cell(hoursText(m.cycleHours), null, m.mergedSample ? `median of ${m.mergedSample} merged pull request${m.mergedSample === 1 ? '' : 's'}` : 'nothing merged this week'));
+      tr.append(cell(hoursText(m.firstReviewHours), null, m.reviewedSample ? `median of ${m.reviewedSample} reviewed pull request${m.reviewedSample === 1 ? '' : 's'}` : 'no reviewed merges this week'));
+      tr.append(cell(withDelta(r.commits7d, r.commitsPrev7d)));
+      const top = people?.top ? ` · top ${Math.round(people.top.share * 100)}%` : '';
+      tr.append(cell(people ? `${fmt.format(people.count)}${top}` : '—', people?.top && people.top.share >= 0.75 && people.count > 1 ? 'warnc' : '', people?.top ? `${people.top.name} made ${Math.round(people.top.share * 100)}% of this week's commits${people.botCommits ? `; ${people.botCommits} bot commit${people.botCommits === 1 ? '' : 's'} not counted` : ''}` : ''));
+      const net = m.issuesOpened7d == null || m.issuesClosed7d == null ? null : m.issuesOpened7d - m.issuesClosed7d;
+      tr.append(cell(net == null ? '—' : `+${fmt.format(m.issuesOpened7d)} / −${fmt.format(m.issuesClosed7d)} (${net > 0 ? '+' : ''}${fmt.format(net)})`, net > 0 ? 'warnc' : ''));
+      tr.append(cell(m.stalePrs == null ? '—' : fmt.format(m.stalePrs), m.stalePrs > 0 ? 'warnc' : ''));
+      tr.append(cell(c ? `${fmt.format(c.failed7d)} / ${fmt.format(c.runs7d)}${c.failing.length ? ` · ${c.failing.slice(0, 2).join(', ')}${c.failing.length > 2 ? ` +${c.failing.length - 2}` : ''}` : ''}` : '—', c?.failing.length ? 'bad' : c?.failed7d ? 'warnc' : '', c ? `Actions runs on ${c.branch} this week` : 'No Actions runs visible for this repository'));
+      tr.append(cell(r.alerts == null ? '—' : fmt.format(r.alerts), r.alerts > 0 ? 'bad' : ''));
+      body.append(tr);
+      tot.merged += r.merged7d || 0; if (m.mergedPrev7d == null) tot.prevKnown = false; else tot.mergedPrev += m.mergedPrev7d;
+      tot.opened += m.prsOpened7d || 0;
+      tot.commits += r.commits7d || 0; if (r.commitsPrev7d == null) tot.cPrevKnown = false; else tot.commitsPrev += r.commitsPrev7d;
+      tot.io += m.issuesOpened7d || 0; tot.ic += m.issuesClosed7d || 0; tot.stale += m.stalePrs || 0;
+      if (c) { tot.ciKnown = true; tot.failed += c.failed7d; tot.runs += c.runs7d; }
+      if (r.alerts != null) { tot.alertsKnown = true; tot.alerts += r.alerts; }
+    }
+    const total = $('velocity-total');
+    total.replaceChildren();
+    if (repos.length < 2) return;
+    const net = tot.io - tot.ic;
+    total.append(el('td', null, 'All'));
+    total.append(cell(withDelta(tot.merged, tot.prevKnown ? tot.mergedPrev : null)), cell(fmt.format(tot.opened)), cell('—'), cell('—'),
+      cell(withDelta(tot.commits, tot.cPrevKnown ? tot.commitsPrev : null)), cell('—'),
+      cell(`+${fmt.format(tot.io)} / −${fmt.format(tot.ic)} (${net > 0 ? '+' : ''}${fmt.format(net)})`, net > 0 ? 'warnc' : ''),
+      cell(fmt.format(tot.stale), tot.stale > 0 ? 'warnc' : ''),
+      cell(tot.ciKnown ? `${fmt.format(tot.failed)} / ${fmt.format(tot.runs)}` : '—', tot.failed ? 'warnc' : ''),
+      cell(tot.alertsKnown ? fmt.format(tot.alerts) : '—', tot.alerts > 0 ? 'bad' : ''));
   }
 
   let notified = 0;
@@ -762,6 +882,7 @@
     else if (e.key === 'd') showTab('dashboard');
     else if (e.key === 's') showTab('settings');
     else if (e.key === 't') { prefs.theme = { system: 'light', light: 'dark', dark: 'system' }[prefs.theme] || 'system'; savePrefs(); applyTheme(); $('pref-theme').value = prefs.theme; }
+    else if (e.key === 'v') { prefs.velocity = !prefs.velocity; savePrefs(); $('pref-velocity').checked = prefs.velocity; drawVelocity(); }
   });
 
   // ----- settings -----
@@ -983,7 +1104,9 @@
     $('pref-bots').checked = prefs.hideBots;
     $('pref-announce').checked = prefs.announce;
     $('pref-notify').checked = prefs.notify;
+    $('pref-velocity').checked = prefs.velocity;
   }
+  $('pref-velocity').onchange = () => { prefs.velocity = $('pref-velocity').checked; savePrefs(); drawVelocity(); };
   $('pref-theme').onchange = () => { prefs.theme = $('pref-theme').value; savePrefs(); applyTheme(); };
   $('pref-motion').onchange = () => { prefs.motion = $('pref-motion').checked; savePrefs(); applyTheme(); };
   $('pref-bots').onchange = () => { prefs.hideBots = $('pref-bots').checked; savePrefs(); if (snap) draw(); };

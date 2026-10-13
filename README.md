@@ -42,6 +42,24 @@ Each repository card:
 - **Oldest open:** the three oldest non-draft PRs with author, review state, and a marker for first-time or community contributors.
 - **Quiet** (no commit in 30 days), **Slowing** (8 to 30 days), **Archived** or **Unavailable** chips when they apply. Active repos get no chip; silence is the good state.
 
+When checks failed on the watched branch this week, the card adds a line such as `checks 7d: 42 passed · 6 failed · failing now: Nightly`, with the failure count linking to the latest failed run. Open Dependabot security alerts appear on the card too when the token may read them.
+
+### Velocity
+
+Below the cards, a **Velocity · last 7 days** table gives the numbers a manager asks for, computed fresh from GitHub on every poll (nothing is stored, so a new install shows a full week immediately). Arrows compare with the seven days before. Per repository, with a totals row:
+
+- **Merged** and **Opened** pull requests.
+- **Cycle time:** median time from opening to merge for the pull requests merged this week.
+- **First review:** median time from opening to the first submitted review, for merged pull requests that got one.
+- **Commits** on the watched branch.
+- **People:** how many people committed, and the share of commits by the busiest one; 75 percent or more is highlighted.
+- **Issues +/−:** opened and closed, with the net change to the backlog.
+- **Stale PRs:** open, non-draft pull requests older than 14 days.
+- **CI failed:** failed out of total GitHub Actions runs on the watched branch, followed by any workflow whose latest run failed.
+- **Alerts:** open Dependabot security alerts.
+
+Bots (`dependabot`, `renovate`, anything ending in `[bot]` or `-bot`) are left out of the people column and the two medians, because a dependency bot is otherwise the "top contributor" and an auto-merge bot has a one-minute cycle time. Hover a column heading for its definition. The table is hidden in TV mode and can be turned off per browser (or with the `v` key).
+
 Below the cards, **Recent commits** merges up to five of the latest commits per repository, newest first. New rows are tagged "new" until the next update, and numbers that changed show their delta (for example `↑2`) until then.
 
 The **status strip** shows whether the page is live, "Updated 28s ago" with the exact local time beside it, the poll interval, the GitHub API budget left this hour, and Pause and Refresh buttons. If the data is older than two poll intervals an amber bar says how old it is and the cards dim. If GitHub rejects the token the dot turns red and a banner says what to do. If GitHub rate-limits the server the bar says when polling resumes.
@@ -59,14 +77,14 @@ The Settings tab has a "This browser" panel for preferences that live in the bro
 The server looks for a token in this order: `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token` from the GitHub CLI. It never shows the token anywhere, but it does tell you which source and which account are in use, in the console at startup, in the setup steps, and in the Settings tab.
 
 - **Public repositories only:** any token works; a classic token needs no scopes, a fine-grained token needs only the default public read access.
-- **Private repositories:** a classic token with the `repo` scope, or a fine-grained token with read access to Contents, Issues, Pull requests and Metadata for the repositories you pick. Fine-grained tokens expire; when one does, the dashboard stops polling and says so.
+- **Private repositories:** a classic token with the `repo` scope, or a fine-grained token with read access to Contents, Issues, Pull requests and Metadata for the repositories you pick. Add Actions read access for the CI column and Dependabot alerts read access for the Alerts column; without them those columns show a dash. Fine-grained tokens expire; when one does, the dashboard stops polling and says so.
 - The `gh` login is convenient but usually carries more scope than this tool needs. If that bothers you, create a read-only fine-grained token and set `GITHUB_TOKEN`.
 
 The token is read once at startup, so restart after rotating it.
 
 ## How it stays live
 
-- **Polling:** one GraphQL request per poll for all selected repositories, every `pollSeconds` (default 60; the Settings dropdown offers 15 s to 1 hour). Each poll costs about 1 point of the token's 5,000-points-per-hour GraphQL budget; the status strip shows what's left. GitHub answers in about 3 to 5 seconds for busy repositories.
+- **Polling:** every `pollSeconds` (default 60; the Settings dropdown offers 15 s to 1 hour) the server makes two GraphQL requests in parallel, one for the cards and one for the velocity searches, plus one REST call per repository for its Actions runs. Together they cost about 2 points of the token's 5,000-points-per-hour GraphQL budget and one call per repository from the separate 5,000-per-hour REST budget; the status strip shows the GraphQL points left. GitHub answers in about 4 to 6 seconds for busy repositories. If the velocity request or an Actions call fails, only those cells go blank; the cards still update.
 - **Backoff:** after a failed poll the interval doubles (with jitter) up to 30 minutes. A rate-limit answer pauses polling until the time GitHub gives. A rejected token stops polling until you restart with a new one; "Refresh now" still retries.
 - **Push to browser:** open pages get each new snapshot over server-sent events (`/api/events`). If the page loses the server it says so and reconnects on its own.
 - **Webhooks (optional):** set `WEBHOOK_SECRET` and point a GitHub webhook (content type `application/json`; events: push, issues, pull requests, pull request reviews, check suites, workflow runs, statuses, releases) at `https://<host>/webhook`. The server checks the signature, ignores replayed delivery ids, and refreshes within a few seconds. Webhooks need the server to be reachable from GitHub, so they only work on a web server, not on localhost.

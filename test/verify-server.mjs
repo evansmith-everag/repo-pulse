@@ -258,6 +258,7 @@ try {
     const alpha2 = multi.repos?.find((r) => r.name === 'alpha') || {};
     ok('a repository under another owner keeps its owner', delta.owner === 'other' && delta.fullName === 'other/delta' && delta.key === 'other/delta', JSON.stringify([delta.owner, delta.fullName, delta.key]));
     ok('fixture rows carry label counts and the week shape', alpha2.labels?.bug === 7 && Array.isArray(alpha2.week?.days) && alpha2.week.days.length === 7, JSON.stringify([alpha2.labels, alpha2.week]));
+    ok('fixture rows carry velocity metrics, contributors, alerts and CI runs', alpha2.metrics?.cycleHours === 20 && alpha2.contributors?.count === 3 && alpha2.alerts === 2 && alpha2.ciRuns?.failing?.[0] === 'Nightly' && alpha2.commitsPrev7d === 12, JSON.stringify([alpha2.metrics, alpha2.ciRuns]));
     ok('the cache file remembers the repository list it was made for', JSON.parse(readFileSync(s.cachePath, 'utf8')).specs.includes('other/delta'));
     await s.stop();
   }
@@ -272,6 +273,13 @@ try {
     ok('a missing branch is reported on its card, not as a failed poll', /Branch "no-such-branch"/.test(rows['github/docs@no-such-branch']?.error || '') && !snap.error, rows['github/docs@no-such-branch']?.error);
     ok('label counts come back per repository', typeof rows['github/gitignore']?.labels?.bug === 'number', JSON.stringify(rows['github/gitignore']?.labels));
     ok('the week shape has seven buckets that sum to at most the sample', rows['github/gitignore']?.week?.days?.length === 7, JSON.stringify(rows['github/gitignore']?.week));
+    const vm = rows['nodejs/undici@main']?.metrics || {};
+    ok('velocity metrics come back with last week\'s merges, PRs opened, issues opened and closed, and stale PRs', vm.available === true && ['mergedPrev7d', 'prsOpened7d', 'issuesOpened7d', 'issuesClosed7d', 'stalePrs'].every((k) => typeof vm[k] === 'number'), JSON.stringify(vm));
+    ok('cycle time and first review are medians in hours (or null when nothing merged)', (vm.cycleHours === null || vm.cycleHours >= 0) && (vm.firstReviewHours === null || vm.firstReviewHours >= 0) && typeof vm.mergedSample === 'number', JSON.stringify([vm.cycleHours, vm.firstReviewHours, vm.mergedSample]));
+    ok('last week\'s commit count and contributor concentration come back', typeof rows['nodejs/undici@main']?.commitsPrev7d === 'number' && typeof rows['nodejs/undici@main']?.contributors?.count === 'number', JSON.stringify(rows['nodejs/undici@main']?.contributors));
+    const ci = rows['nodejs/undici@main']?.ciRuns;
+    ok('GitHub Actions runs on the watched branch are summarised', ci && ci.branch === 'main' && typeof ci.runs7d === 'number' && typeof ci.failed7d === 'number' && Array.isArray(ci.failing), JSON.stringify(ci));
+    ok('security alerts are a number or null, never an error', rows['nodejs/undici@main']?.alerts === null || typeof rows['nodejs/undici@main']?.alerts === 'number');
     const html = await (await fetch(`${BASE}/`)).text();
     ok('the page carries the same build stamp as the snapshot', typeof snap.build === 'string' && html.includes(`<meta name="build" content="${snap.build}">`), snap.build);
     ok('a malformed entry is rejected with guidance', /is not a repository/.test((await post('/api/config', { org: 'github', repos: ['bad name!'], pollSeconds: 60 })).json?.error || ''));

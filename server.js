@@ -30,6 +30,9 @@ const WEEK_SAMPLE = 100; // commit dates fetched for the 7-day sparkline; busier
 // The oldest open PRs. GitHub answers a 3-repo query in about 4 s at 10, 6 s at 20 and times out (502) near 30
 // with per-PR check status, so this stays modest and per-PR checks are not requested at all.
 const PRS_PER_REPO = 15;
+const STALE_PR_DAYS = 14; // an open, non-draft PR older than this counts as stale
+const MERGED_SAMPLE = 30; // merged PRs sampled per repo for cycle-time and first-review medians
+const CI_RUNS_PAGE = 50; // workflow runs fetched per repo per poll (REST, one call per repo)
 const ORG_LIST_TTL_MS = 60 * 60 * 1000;
 const ORG_LIST_MAX_PAGES = 10; // 1,000 repositories; the picker caps at 300 rows and has an add-by-name box anyway
 const FETCH_TIMEOUT_MS = 20_000;
@@ -258,21 +261,31 @@ async function whoAmI() {
   }
 }
 
-// One request per poll for every repository: counts, the branch head's CI state, the latest release, the oldest open
-// PRs with their review state, recent commits, commit dates for the week's shape, per-label issue counts, and two
-// searches (merged in 7 days, untriaged issues).
+// Each poll makes two GraphQL requests in parallel plus one REST call per repository:
+//  - the core query: counts, the branch head's CI state, the latest release, the oldest open PRs with their review
+//    state, recent commits, commit dates and authors for the week's shape, last week's commit count, per-label issue
+//    counts, open security alerts (when the token may see them), merged-in-7-days and untriaged searches;
+//  - the velocity query: searches for last week's merges, PRs opened, issues opened and closed, stale PRs, and a
+//    sample of this week's merged PRs with their review timing;
+//  - GitHub Actions runs on the watched branch, for CI failures.
+// Keeping them separate keeps each inside GitHub's ~10 s GraphQL budget; a failing velocity or CI call only blanks
+// those cells.
 async function fetchRepoData(org, specs, labels) {
   if (!specs.length) return { repos: [], rateLimit: snapshot.rateLimit || null };
   const parsed = specs.map((s) => parseSpec(s, org));
   if (FIXTURE_PATH) return fetchFixture(parsed);
-  const since = new Date(Date.now() - 7 * 864e5).toISOString();
-  const sinceDay = since.slice(0, 10);
+  const now = Date.now();
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+  const since = new Date(now - 7 * 864e5).toISOString();
+  const since14 = new Date(now - 14 * 864e5).toISOString();
+  const d7 = day(now - 7 * 864e5), d8 = day(now - 8 * 864e5), d14 = day(now - 14 * 864e5), dStale = day(now - STALE_PR_DAYS * 864e5);
   const labelFields = labels.map((_, j) => `lab${j}: issues(states: OPEN, labels: $lab${j}) { totalCount }`).join(' ');
   const fields = parsed.map((p, i) => `
     r${i}: repository(owner: $o${i}, name: $n${i}) {
       name nameWithOwner url isArchived
       issues(states: OPEN) { totalCount }
       ${labelFields}
+      vulnerabilityAlerts(states: OPEN) { totalCount }
       latestRelease { tagName name publishedAt url isPrerelease }
       pullRequests(states: OPEN, first: ${PRS_PER_REPO}, orderBy: { field: CREATED_AT, direction: ASC }) {
         totalCount
@@ -281,7 +294,8 @@ async function fetchRepoData(org, specs, labels) {
       newest: pullRequests(states: OPEN, last: 3, orderBy: { field: CREATED_AT, direction: ASC }) { nodes { ...PR } }
       branch: ${p.branch ? `ref(qualifiedName: $b${i})` : 'defaultBranchRef'} { name target { ... on Commit {
         statusCheckRollup { state }
-        week: history(since: $since, first: ${WEEK_SAMPLE}) { totalCount nodes { committedDate } }
+        week: history(since: $since, first: ${WEEK_SAMPLE}) { totalCount nodes { committedDate author { name user { login } } } }
+        prevWeek: history(since: $since14, until: $since) { totalCount }
         recent: history(first: ${COMMITS_PER_REPO}) { nodes {
           oid committedDate messageHeadline url
           author { name user { login } }
@@ -294,22 +308,109 @@ async function fetchRepoData(org, specs, labels) {
     ...parsed.map((p, i) => `$o${i}: String!, $n${i}: String!, $m${i}: String!, $u${i}: String!${p.branch ? `, $b${i}: String!` : ''}`),
     ...labels.map((_, j) => `$lab${j}: [String!]!`),
   ].join(', ');
-  const query = `query($since: GitTimestamp!, ${vars}) { ${fields} rateLimit { cost remaining limit resetAt } }
+  const query = `query($since: GitTimestamp!, $since14: GitTimestamp!, ${vars}) { ${fields} rateLimit { cost remaining limit resetAt } }
     fragment PR on PullRequest {
       number title url createdAt isDraft reviewDecision authorAssociation
       author { login }
     }`;
-  const variables = { since };
+  const variables = { since, since14 };
   parsed.forEach((p, i) => {
     variables[`o${i}`] = p.owner;
     variables[`n${i}`] = p.name;
     if (p.branch) variables[`b${i}`] = `refs/heads/${p.branch}`;
-    variables[`m${i}`] = `repo:${p.fullName} is:pr is:merged merged:>=${sinceDay}`;
+    variables[`m${i}`] = `repo:${p.fullName} is:pr is:merged merged:>=${d7}`;
     variables[`u${i}`] = `repo:${p.fullName} is:issue is:open no:label comments:0`;
   });
   labels.forEach((l, j) => { variables[`lab${j}`] = [l]; });
+
+  const vFields = parsed.map((_, i) => `
+    mn${i}: search(query: $mn${i}, type: ISSUE, first: ${MERGED_SAMPLE}) { nodes { ... on PullRequest { createdAt mergedAt author { login } reviews(first: 1) { nodes { submittedAt } } } } }
+    mp${i}: search(query: $mp${i}, type: ISSUE, first: 1) { issueCount }
+    po${i}: search(query: $po${i}, type: ISSUE, first: 1) { issueCount }
+    io${i}: search(query: $io${i}, type: ISSUE, first: 1) { issueCount }
+    ic${i}: search(query: $ic${i}, type: ISSUE, first: 1) { issueCount }
+    sp${i}: search(query: $sp${i}, type: ISSUE, first: 1) { issueCount }`).join('\n');
+  const vVars = parsed.map((_, i) => ['mn', 'mp', 'po', 'io', 'ic', 'sp'].map((k) => `$${k}${i}: String!`).join(', ')).join(', ');
+  const vQuery = `query(${vVars}) { ${vFields} }`;
+  const vVariables = {};
+  parsed.forEach((p, i) => {
+    vVariables[`mn${i}`] = `repo:${p.fullName} is:pr is:merged merged:>=${d7}`;
+    vVariables[`mp${i}`] = `repo:${p.fullName} is:pr is:merged merged:${d14}..${d8}`;
+    vVariables[`po${i}`] = `repo:${p.fullName} is:pr created:>=${d7}`;
+    vVariables[`io${i}`] = `repo:${p.fullName} is:issue created:>=${d7}`;
+    vVariables[`ic${i}`] = `repo:${p.fullName} is:issue is:closed closed:>=${d7}`;
+    vVariables[`sp${i}`] = `repo:${p.fullName} is:pr is:open draft:false created:<${dStale}`;
+  });
+
+  // CI runs need the branch name; start right away where it is known (explicit, or from the last snapshot) and
+  // after the core query otherwise.
+  const hints = parsed.map((p) => p.branch || snapshot.repos?.find((r) => r.key === p.key)?.branch || null);
+  const ciEarly = parsed.map((p, i) => (hints[i] ? fetchCiRuns(p, hints[i], since) : null));
+  const velocity = graphql(vQuery, vVariables).then((res) => res.data, (err) => { warn(`velocity query failed: ${err.message}`); return null; });
   const { data, errors } = await graphql(query, variables);
-  return { repos: parsed.map((p, i) => buildRow(p, i, data, errors, labels)), rateLimit: data?.rateLimit || null };
+  const rows = parsed.map((p, i) => buildRow(p, i, data, errors, labels));
+  const ciAll = parsed.map((p, i) => (rows[i].error ? null : ciEarly[i] || fetchCiRuns(p, rows[i].branch, since)));
+  const [vdata, ...cis] = await Promise.all([velocity, ...ciAll]);
+  rows.forEach((row, i) => { if (!row.error) { row.metrics = buildMetrics(i, vdata); row.ciRuns = cis[i]; } });
+  return { repos: rows, rateLimit: data?.rateLimit || null };
+}
+
+const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const hoursBetween = (a, b) => (new Date(b) - new Date(a)) / 36e5;
+
+function buildMetrics(i, vdata) {
+  const g = (k) => vdata?.[`${k}${i}`];
+  const merged = (g('mn')?.nodes || []).filter((n) => n && n.createdAt && !BOT_RE.test(n.author?.login || ''));
+  const cycle = merged.filter((n) => n.mergedAt).map((n) => hoursBetween(n.createdAt, n.mergedAt));
+  const firstReview = merged.filter((n) => n.reviews?.nodes?.[0]?.submittedAt).map((n) => hoursBetween(n.createdAt, n.reviews.nodes[0].submittedAt));
+  return {
+    available: Boolean(vdata),
+    mergedPrev7d: g('mp')?.issueCount ?? null,
+    prsOpened7d: g('po')?.issueCount ?? null,
+    issuesOpened7d: g('io')?.issueCount ?? null,
+    issuesClosed7d: g('ic')?.issueCount ?? null,
+    stalePrs: g('sp')?.issueCount ?? null,
+    staleDays: STALE_PR_DAYS,
+    cycleHours: median(cycle),
+    firstReviewHours: median(firstReview),
+    mergedSample: merged.length,
+    reviewedSample: firstReview.length,
+  };
+}
+
+const FAILED_CONCLUSIONS = new Set(['failure', 'timed_out', 'startup_failure', 'action_required']);
+const IGNORED_CONCLUSIONS = new Set(['cancelled', 'skipped', 'neutral', 'stale']);
+
+// GitHub Actions runs on one branch (REST; GraphQL has no equivalent). Null when Actions is off, the token may not
+// read it, or GitHub is slow: a missing CI column must never fail the poll.
+async function fetchCiRuns(p, branch, since) {
+  if (!branch || !token) return null;
+  try {
+    const url = `https://api.github.com/repos/${p.fullName}/actions/runs?branch=${encodeURIComponent(branch)}&per_page=${CI_RUNS_PAGE}&exclude_pull_requests=true`;
+    const res = await fetch(url, {
+      headers: { Authorization: `bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'repo-pulse' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+    const runs = ((await res.json()).workflow_runs || []).filter((r) => r.status === 'completed' && r.conclusion && !IGNORED_CONCLUSIONS.has(r.conclusion));
+    const recent = runs.filter((r) => r.created_at >= since);
+    const failed = recent.filter((r) => FAILED_CONCLUSIONS.has(r.conclusion));
+    const latest = new Map(); // newest completed run per workflow; "failing" means its latest run failed
+    for (const r of runs) if (!latest.has(r.name)) latest.set(r.name, r);
+    const failing = [...latest.values()].filter((r) => FAILED_CONCLUSIONS.has(r.conclusion)).map((r) => r.name);
+    const last = failed[0] || [...latest.values()].find((r) => FAILED_CONCLUSIONS.has(r.conclusion)) || null;
+    return {
+      branch,
+      runs7d: recent.length,
+      failed7d: failed.length,
+      failing,
+      lastFailure: last ? { name: last.name, url: last.html_url, at: last.created_at } : null,
+      truncated: runs.length >= CI_RUNS_PAGE && runs.at(-1)?.created_at >= since,
+    };
+  } catch (err) {
+    warn(`actions runs for ${p.fullName}@${branch} skipped: ${err.message}`);
+    return null;
+  }
 }
 
 async function fetchFixture(parsed) {
@@ -322,6 +423,9 @@ async function fetchFixture(parsed) {
   return { repos: rows, rateLimit: f.rateLimit || { cost: 1, remaining: 4999, limit: 5000, resetAt: new Date(Date.now() + 3600e3).toISOString() } };
 }
 
+// Bots skew people-metrics (a dependency bot can be the "top contributor", an auto-merge bot has a one-minute
+// cycle time), so they are left out of contributor concentration and the review-timing medians.
+const BOT_RE = /\[bot\]$|(^|[-_])bot$|^(dependabot|renovate|github-actions|greenkeeper)/i;
 const CI_STATE = { SUCCESS: 'passing', FAILURE: 'failing', ERROR: 'failing', PENDING: 'pending', EXPECTED: 'pending' };
 const ciOf = (rollup) => (rollup?.state ? CI_STATE[rollup.state] || null : null);
 const INSIDERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
@@ -335,6 +439,20 @@ function weekShape(nodes) {
     if (age >= 0 && age < 7) days[6 - age]++;
   }
   return days;
+}
+
+// Who wrote the week's commits: how many people, and how much of it the busiest one did.
+function contributorsOf(nodes) {
+  const counts = new Map();
+  let bots = 0;
+  for (const n of nodes || []) {
+    const who = n.author?.user?.login || n.author?.name || 'unknown';
+    if (BOT_RE.test(who)) { bots++; continue; }
+    counts.set(who, (counts.get(who) || 0) + 1);
+  }
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  const [top] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  return { count: counts.size, botCommits: bots, top: top && total ? { name: top[0], share: top[1] / total } : null };
 }
 
 function buildRow(p, i, data, errors, labels) {
@@ -398,7 +516,10 @@ function buildRow(p, i, data, errors, labels) {
       newest: (r.newest?.nodes || []).map(toPr).reverse(), // newest first; the page uses these to notice arrivals
     },
     commits7d: target?.week.totalCount ?? 0,
+    commitsPrev7d: target?.prevWeek?.totalCount ?? null,
     week: { total: target?.week.totalCount ?? 0, days: weekShape(target?.week.nodes), sampled: (target?.week.totalCount ?? 0) > WEEK_SAMPLE },
+    contributors: contributorsOf(target?.week.nodes),
+    alerts: r.vulnerabilityAlerts?.totalCount ?? null, // null unless the token may read Dependabot alerts
     lastCommitAt: commits[0]?.committedAt || null,
     commits,
   };
