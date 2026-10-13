@@ -43,7 +43,12 @@ writeFileSync(fixCfg, JSON.stringify(FIXTURE_CFG));
 const serverEnv = { ...process.env, HOST: '127.0.0.1', ADMIN_TOKEN: '', WEBHOOK_SECRET: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '' };
 const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(PORT), REPO_PULSE_CONFIG: liveCfg, REPO_PULSE_CACHE: path.join(TMP, 'live-cache.json'), REPO_PULSE_FIXTURE: '' }, stdio: 'ignore' });
 const fixServer = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(FIX_PORT), REPO_PULSE_CONFIG: fixCfg, REPO_PULSE_CACHE: path.join(TMP, 'fix-cache.json'), REPO_PULSE_FIXTURE: path.join(ROOT, 'test', 'fixture.json'), MAX_REPOS: '4' }, stdio: 'ignore' });
-const browser = spawn(browserPath, [headlessFlag, '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${DBG}`, `--user-data-dir=${path.join(TMP, 'profile')}`, '--window-size=1280,1000', 'about:blank'], { stdio: 'ignore' });
+// --disable-dev-shm-usage keeps Chromium alive in containers with a tiny /dev/shm; --remote-allow-origins lets a
+// non-browser client open the DevTools socket. The browser's own output is kept so a failure to start explains itself.
+const browser = spawn(browserPath, [headlessFlag, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-allow-origins=*', `--remote-debugging-port=${DBG}`, `--user-data-dir=${path.join(TMP, 'profile')}`, '--window-size=1280,1000', 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+let browserLog = '';
+browser.stdout.on('data', (d) => (browserLog += d));
+browser.stderr.on('data', (d) => (browserLog += d));
 let ws = null;
 
 try {
@@ -51,12 +56,19 @@ try {
   const initial = await (await fetch(`${APP}/api/config`)).json();
   const N = initial.repos.length;
 
-  let target;
-  for (let i = 0; i < 100; i++) {
-    try { const list = await (await fetch(`http://127.0.0.1:${DBG}/json`)).json(); target = list.find((t) => t.type === 'page'); if (target) break; } catch {}
+  let target, lastProblem = '';
+  for (let i = 0; i < 300; i++) { // up to a minute: a cold CI runner starts the browser slowly
+    try {
+      const list = await (await fetch(`http://127.0.0.1:${DBG}/json`)).json();
+      target = list.find((t) => t.type === 'page');
+      if (target) break;
+      lastProblem = `no page target among ${list.map((t) => t.type).join(',') || 'none'}`;
+      if (i % 25 === 0) await fetch(`http://127.0.0.1:${DBG}/json/new?about:blank`, { method: 'PUT' }).catch(() => {});
+    } catch (err) { lastProblem = err.message; }
+    if (browser.exitCode !== null) break;
     await sleep(200);
   }
-  if (!target) throw new Error('could not attach to the browser');
+  if (!target) throw new Error(`could not attach to ${browserPath} on port ${DBG} (${lastProblem}; exit code ${browser.exitCode}). Browser output:\n${browserLog.split('\n').slice(-20).join('\n')}`);
 
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((r) => (ws.onopen = r));
