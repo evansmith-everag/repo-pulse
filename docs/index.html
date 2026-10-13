@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Repo Pulse: a live dashboard for a few GitHub repositories</title>
+<meta name="description" content="A live dashboard for up to three GitHub repositories: pull requests that need review, checks on the branch you watch, the latest release, and what landed this week. One Node.js file plus one HTML file, no dependencies, public domain.">
+<meta property="og:title" content="Repo Pulse">
+<meta property="og:description" content="Is code moving? Is anything waiting on you? A live dashboard for a few GitHub repositories, from one Node.js file and one HTML file.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://evansmith-everag.github.io/repo-pulse/">
+<meta property="og:image" content="https://evansmith-everag.github.io/repo-pulse/images/cards-dark.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="690">
+<meta property="og:image:alt" content="The Repo Pulse dashboard: three repository cards with checks chips, needs-review counts, commits and merges this week, releases and the oldest open pull requests.">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  /* Theme preference only. The page is complete without this; it just avoids a flash when a visitor chose a theme. */
+  try { var t = localStorage.getItem('repo-pulse-site:theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<style>
+  /* Sibling of the product page: the same palette, the same serif for big figures, mono for meta lines,
+     system fonts only. No icons, no gradients, no web fonts, no external requests. */
+  :root {
+    --bg: #f5f6f3; --panel: #ffffff; --line: #dfe2da; --line-strong: #848d86; --fg: #1d2420; --muted: #66706a;
+    --accent: #2f6b4f; --ok: #2f7d4f; --warn: #8f5313; --bad: #b8433a;
+    --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+    --radius: 8px; color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
+      --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
+    --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 16px; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 var(--font-body); -webkit-text-size-adjust: 100%; }
+  .wrap { max-width: 72rem; margin-inline: auto; padding-inline: 16px; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .skip { position: absolute; left: 16px; top: -6rem; z-index: 10; background: var(--panel); color: var(--fg); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 12px; text-decoration: none; }
+  .skip:focus { top: 16px; }
+
+  /* Top bar: wordmark and in-page links, in the product's pill style. */
+  .top { border-bottom: 1px solid var(--line); }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding-block: 16px; }
+  .wordmark { font: 400 1.5rem/1.1 var(--font-display); color: var(--fg); text-decoration: none; }
+  .top nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; font-size: .9rem; }
+  .top nav a { color: var(--muted); text-decoration: none; padding: 6px 0; }
+  .top nav a:hover { color: var(--fg); text-decoration: underline; }
+  .pill { font: 500 .85rem var(--font-body); border: 1px solid var(--line); background: var(--panel); color: var(--muted); padding: 6px 14px; border-radius: 999px; cursor: pointer; min-height: 32px; }
+  .pill:hover { color: var(--fg); border-color: var(--line-strong); }
+
+  /* Type scale. The serif is for the headline, section titles and big figures, as in the product. */
+  h1 { font: 400 clamp(2rem, 1.2rem + 3.6vw, 3.4rem)/1.1 var(--font-display); letter-spacing: -.01em; margin: 0 0 18px; max-width: 20ch; text-wrap: balance; }
+  h2 { font: 400 clamp(1.55rem, 1.2rem + 1.4vw, 2.1rem)/1.15 var(--font-display); margin: 0 0 10px; text-wrap: balance; }
+  h3 { font: 600 1rem/1.3 var(--font-body); margin: 0 0 6px; }
+  p { margin: 0 0 12px; }
+  p:last-child { margin-bottom: 0; }
+  .prose, .sect-head { max-width: 62ch; }
+  .sect-head { margin-bottom: 28px; }
+  .sect-head p { color: var(--muted); }
+  section { padding-block: 56px; }
+  section + section, .shot + section { border-top: 1px solid var(--line); }
+  .num, .stat b { font-variant-numeric: tabular-nums; }
+  code { font-family: var(--font-mono); font-size: .88em; overflow-wrap: anywhere; }
+  p code, li code, dd code, summary code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; overflow-x: auto; font: .85rem/1.55 var(--font-mono); margin: 0 0 12px; color: var(--fg); }
+  pre code { font-size: inherit; }
+  kbd { font: .8em var(--font-mono); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
+  ul, ol { padding-left: 1.3em; margin: 0 0 12px; }
+  li { margin-bottom: 4px; }
+
+  /* Hero */
+  .hero { padding-block: 56px 40px; }
+  .kicker { font: .8rem/1.5 var(--font-mono); color: var(--muted); letter-spacing: .02em; margin-bottom: 20px; }
+  .lede { font-size: 1.15rem; max-width: 56ch; margin-bottom: 8px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 20px; }
+  .primary, .secondary { display: inline-flex; align-items: center; font: 600 .95rem var(--font-body); border-radius: 6px; padding: 11px 20px; text-decoration: none; min-height: 44px; }
+  .primary { background: var(--accent); color: var(--bg); }
+  .primary:hover { text-decoration: underline; }
+  .secondary { border: 1px solid var(--accent); color: var(--accent); background: transparent; }
+  .facts { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 0; font: .85rem/1.6 var(--font-mono); color: var(--muted); }
+  .facts li { margin: 0; }
+  .facts li + li::before { content: "·" / ""; margin-inline: 10px; }
+  @media (max-width: 40rem) { .facts { flex-direction: column; } .facts li + li::before { content: none; } }
+
+  /* Screenshots sit in the product's panel frame. */
+  .shot { margin: 0; padding-bottom: 56px; }
+  .shot img, .figure img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  figcaption { font-size: .85rem; color: var(--muted); margin-top: 10px; max-width: 72ch; }
+  .figure { margin: 0; }
+
+  /* Cards: the dashboard's own card and chip styles, reused for text. */
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .card p { margin: 0; font-size: .95rem; }
+  .sample { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: flex-end; min-height: 4.8rem; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .stat b { display: block; font: 400 2.4rem/1 var(--font-display); }
+  .stat .label { display: block; font-size: .78rem; color: var(--muted); }
+  .stat .sub { display: block; font: .72rem var(--font-mono); color: var(--muted); }
+  .chip { display: inline-block; font-size: .75rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; line-height: 1.5; }
+  .chip.ok { color: var(--ok); } .chip.bad { color: var(--bad); font-weight: 600; } .chip.muted { color: var(--muted); } .chip.warn { color: var(--warn); }
+  .meta { font: .8rem/1.6 var(--font-mono); color: var(--muted); }
+  .meta a { text-decoration: none; }
+  .meta .bad { color: var(--bad); }
+  .cols { columns: 2; column-gap: 24px; font-size: .95rem; }
+  .cols li { break-inside: avoid; }
+  @media (max-width: 40rem) { .cols { columns: 1; } }
+
+  /* Steps: numbered with the serif figure, as the dashboard's setup panel numbers its steps. */
+  .steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }
+  .steps li { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; min-width: 0; }
+  .steps li::before { counter-increment: step; content: counter(step); display: block; font: 400 2.4rem/1 var(--font-display); color: var(--accent); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
+  .steps p { font-size: .95rem; }
+
+  /* Two-column blocks that stack on narrow screens. */
+  .split { display: grid; gap: 32px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  .split.narrow-img { grid-template-columns: minmax(0, 1fr) minmax(0, 22rem); }
+  @media (max-width: 52rem) { .split, .split.narrow-img { grid-template-columns: 1fr; } }
+
+  /* "What leaves your machine": a ledger. */
+  .ledger { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px 24px; margin: 0; max-width: 72ch; }
+  .ledger dt { font: 500 .85rem/1.6 var(--font-mono); color: var(--accent); }
+  .ledger dd { margin: 0; }
+  @media (max-width: 40rem) { .ledger { grid-template-columns: 1fr; gap: 2px 0; } .ledger dd { margin-bottom: 12px; } }
+
+  /* FAQ: native details, no script needed. */
+  .faq { max-width: 72ch; border-top: 1px solid var(--line); }
+  details { border-bottom: 1px solid var(--line); padding: 14px 0; }
+  summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+  summary::-webkit-details-marker { display: none; }
+  summary h3 { margin: 0; font-weight: 500; font-size: 1.05rem; }
+  summary::after { content: "+" / ""; flex: none; font: 400 1.4rem/1 var(--font-display); color: var(--muted); }
+  details[open] summary::after { content: "−" / ""; }
+  details > :not(summary) { margin-top: 10px; }
+  details p, details ul { font-size: .95rem; }
+
+  footer { border-top: 1px solid var(--line); padding-block: 32px; font-size: .9rem; color: var(--muted); }
+  footer p { max-width: none; }
+  footer .wordmark { font-size: 1.2rem; }
+
+  @media (max-width: 40rem) {
+    section, .hero { padding-block: 40px; }
+    .shot { padding-bottom: 40px; }
+    .card, .steps li { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap bar">
+    <a class="wordmark" href="#main" aria-label="Repo Pulse, top of page">Repo Pulse</a>
+    <nav aria-label="Page sections">
+      <a href="#answers">What it answers</a>
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#run">Run it</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/evansmith-everag/repo-pulse">GitHub</a>
+    </nav>
+    <button class="pill" id="theme" type="button" hidden>Theme: system</button>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <section class="hero wrap" aria-labelledby="headline">
+    <p class="kicker">Open source · public domain · one Node.js file plus one HTML file</p>
+    <h1 id="headline">Is code moving? Is anything waiting on you?</h1>
+    <p class="lede">Repo Pulse is a live dashboard for up to three GitHub repositories under any organization or user your token can see. It shows the pull requests that need review, the checks on the branch you watch, the latest release, and what landed this week, on one page that updates itself.</p>
+    <p class="cta">
+      <a class="primary" href="https://github.com/evansmith-everag/repo-pulse/releases/latest">Download</a>
+      <a class="secondary" href="https://github.com/evansmith-everag/repo-pulse">View on GitHub</a>
+    </p>
+    <ul class="facts" aria-label="At a glance">
+      <li>No dependencies, no build step</li>
+      <li>Node.js 18 or newer</li>
+      <li>Windows, macOS, Linux, Docker</li>
+      <li>Talks only to GitHub</li>
+    </ul>
+  </section>
+
+  <figure class="shot wrap">
+    <picture>
+      <source id="shot-src" srcset="images/dashboard-dark.png" media="(prefers-color-scheme: dark)">
+      <img src="images/dashboard-light.png" width="1280" height="1560"
+           alt="The Repo Pulse dashboard watching microsoft/vscode, react/react and vercel/next.js. A status strip reads Live, Updated a few seconds ago with the exact time, Polling every 1 minute, API 4,300 left, with Pause updates and Refresh now links. Each repository card has a checks chip (main running, main passing, canary running), three large figures for pull requests needing review with the age of the oldest, commits in the last 7 days with a seven-bar shape of the week, and pull requests merged in the last 7 days; then a line with the branch, last commit age and latest release; a counts line of open PRs, drafts, issues, untriaged issues and bug-labeled issues; and the three oldest open pull requests with author, review state and a community marker. Below the cards, a Velocity table lists Merged, Opened, Cycle time, First review, Commits, People, Issues, Stale PRs, CI failed and Alerts per repository with arrows against the previous week and a totals row, followed by a Recent commits table of the latest commits across the three repositories.">
+    </picture>
+    <figcaption>Watching three public repositories. Cards on top; the <strong>Velocity · last 7 days</strong> table and <strong>Recent commits</strong> below. The <code>≥</code> before a review count means it covers only the 15 oldest open pull requests. The screenshot follows your color scheme; the dashboard has the same light and dark themes.</figcaption>
+  </figure>
+
+  <section class="wrap" id="answers" aria-labelledby="answers-title">
+    <div class="sect-head">
+      <h2 id="answers-title">Three questions, answered at a glance</h2>
+      <p>The three questions a lead asks first. The samples below come from the screenshot above, plus a failing chip for comparison.</p>
+    </div>
+    <div class="grid">
+      <article class="card">
+        <div class="sample">
+          <div class="stat"><b>≥13</b><span class="label">Needs review</span><span class="sub">oldest 10y</span></div>
+        </div>
+        <h3>Is anything waiting on me?</h3>
+        <p>Each card counts the open, non-draft pull requests that nobody has approved or asked changes on, with the age of the oldest one. Beneath it, <strong>Oldest open</strong> lists the three oldest with author, review state, and a marker for first-time or community contributors.</p>
+      </article>
+      <article class="card">
+        <div class="sample">
+          <span class="chip ok">main ● passing</span>
+          <span class="chip bad">main ● failing</span>
+          <span class="chip muted">canary ● running</span>
+        </div>
+        <h3>Is the branch green?</h3>
+        <p>A chip reports the checks on the branch you watch; a failing card also gets a red top edge. When checks failed this week, the card says how many passed and failed, which workflow is failing now, and links to the latest failed run. Open Dependabot security alerts appear on the card too, when the token may read them.</p>
+      </article>
+      <article class="card">
+        <div class="sample">
+          <span class="meta">main · last commit 20m ago · release 1.141.0 6d ago</span>
+        </div>
+        <h3>What shipped, and what is landing?</h3>
+        <p>The meta line gives the branch, the age of the last commit, and the latest release with its age. Commits and merged pull requests for the last seven days sit above it, with a seven-bar shape of the week. The velocity table compares each number with the seven days before.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="wrap" id="features" aria-labelledby="features-title">
+    <div class="sect-head">
+      <h2 id="features-title">What is on the page</h2>
+      <p>Everything comes from GitHub's API on each poll; nothing historical is stored on the server.</p>
+    </div>
+    <div class="grid">
+      <article class="card">
+        <h3>Checks on the watched branch</h3>
+        <p>The chip reads <code>main ● passing</code>, <code>● failing</code> or <code>● running</code>; repositories with no checks show no chip. Watch a branch other than the default by writing <code>name@branch</code>; commits, the checks chip, the week's shape and the last-commit age follow that branch.</p>
+      </article>
+      <article class="card">
+        <h3>Review state</h3>
+        <p>A counts line per card: PRs open, approved, changes requested, drafts, issues open, <strong>untriaged</strong> issues (open, no label, no comments), and the open-issue count for each label you choose, up to five, such as <code>bug</code> or <code>help wanted</code>.</p>
+      </article>
+      <article class="card">
+        <h3>Releases and the week's shape</h3>
+        <p>The latest release with its age, the last commit's age, and seven bars for the last seven days of commits. <strong>Quiet</strong> (no commit in 30 days), <strong>Slowing</strong> (8 to 30 days), <strong>Archived</strong> or <strong>Unavailable</strong> chips appear when they apply. Active repositories get no chip; silence is the good state.</p>
+      </article>
+      <article class="card">
+        <h3>Velocity table</h3>
+        <p>Per repository with a totals row, arrows against the seven days before: <strong>Merged</strong>, <strong>Opened</strong>, <strong>Cycle time</strong> (median open-to-merge), <strong>First review</strong> (median open-to-first-review), <strong>Commits</strong>, <strong>People</strong> (and the busiest one's share; 75 percent or more is highlighted), <strong>Issues +/−</strong>, <strong>Stale PRs</strong> (older than 14 days), <strong>CI failed</strong> out of total runs, and <strong>Alerts</strong>. Bots are left out of the people column and the medians. Hover a heading for its definition.</p>
+      </article>
+      <article class="card">
+        <h3>Recent commits, live</h3>
+        <p>Up to five of the latest commits per repository, merged newest first. Open pages get each new snapshot over server-sent events; new rows are tagged <em>new</em> and changed numbers show their delta, for example <code>↑2</code>, until the next update. Browser notifications for new pull requests and failing checks are a per-browser option.</p>
+      </article>
+      <article class="card">
+        <h3>TV mode</h3>
+        <p>Add <code>?tv=1</code> to the address on a wall display: the layout fills the screen, type is larger, the commit feed moves inside each card, and the navigation is hidden. TV mode defaults to dark; <code>&amp;theme=light</code> forces light.</p>
+      </article>
+      <article class="card">
+        <h3>Your token stays yours</h3>
+        <p>The server reads the token once at startup from <code>GITHUB_TOKEN</code>, <code>GH_TOKEN</code> or the GitHub CLI login. It never shows the token anywhere; it tells you which source and which account are in use. The only network traffic is to GitHub: <code>api.github.com</code> for polling, plus the release download when you press Update now.</p>
+      </article>
+      <article class="card">
+        <h3>Stays live, backs off politely</h3>
+        <p>After a failed poll the interval doubles, up to 30 minutes. A rate-limit answer pauses polling until the time GitHub gives. The last snapshot is kept on disk, so a restart shows data immediately. If a page loses the server it says so and reconnects on its own.</p>
+      </article>
+      <article class="card">
+        <h3>Updates itself</h3>
+        <p>The server checks this project's releases shortly after it starts and about once a month. When a newer one exists, the dashboard shows the version, a link to the release notes and <strong>Update now</strong>. Updating verifies the SHA256 checksum, replaces the files in place, keeps the previous copies in <code>.previous/</code>, and exits so the start script, systemd or Docker brings it back.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="wrap" id="how" aria-labelledby="how-title">
+    <div class="sect-head">
+      <h2 id="how-title">How it works</h2>
+      <p>Three steps. The dashboard itself lists them until all three are done.</p>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Download and start</h3>
+        <p>Install Node.js 18 or newer, download the latest <code>repo-pulse-vX.Y.Z.zip</code> and unzip it. On Windows, double-click <code>start.cmd</code>. On macOS or Linux, run <code>sh start.sh</code>. Anywhere: <code>node server.js</code>. The start scripts open <code>http://127.0.0.1:4317</code> in your browser.</p>
+      </li>
+      <li>
+        <h3>Give it a token</h3>
+        <p>Set <code>GITHUB_TOKEN</code> (or <code>GH_TOKEN</code>), or sign in with the GitHub CLI (<code>gh auth login</code>) and the server uses that login. Public repositories need no scopes. The console prints which token it is using and for which account, for example <code>token: GitHub CLI login (gh auth token) as @you</code>.</p>
+      </li>
+      <li>
+        <h3>Pick repositories</h3>
+        <p>Open <strong>Settings</strong>, enter an organization or user (or press <strong>Use my account</strong>), press <strong>Load repositories</strong>, pick up to three, and save. Type <code>owner/name</code> for a repository under another owner and <code>name@branch</code> to watch a branch other than the default. One dashboard can mix organizations.</p>
+      </li>
+    </ol>
+  </section>
+
+  <section class="wrap" id="settings" aria-labelledby="settings-title">
+    <div class="split narrow-img">
+      <div class="prose">
+        <h2 id="settings-title">One Settings tab, nothing to configure twice</h2>
+        <p>Shared settings live in <code>config.json</code> next to <code>server.js</code>: the owner, the repositories, the poll interval (15 seconds to 1 hour; 60 seconds by default), and up to five issue labels to count. The file can be edited by hand while the server is stopped; if it cannot be parsed, the server starts with defaults, leaves the file alone, and shows the problem in Settings.</p>
+        <p>Preferences that belong to one person live in the browser, not in the shared settings: theme (system, light, dark), reduce motion, hide commits by bots, announce changes to screen readers, browser notifications, and whether the velocity table is shown. Keyboard: <kbd>r</kbd> refresh, <kbd>p</kbd> pause, <kbd>d</kbd> dashboard, <kbd>s</kbd> settings, <kbd>t</kbd> theme, <kbd>v</kbd> velocity table.</p>
+        <p>Set <code>MAX_REPOS</code> to pick up to nine repositories. Three is the glanceable number; more repositories mean a slower poll.</p>
+      </div>
+      <figure class="figure">
+        <img src="images/settings.png" width="318" height="1018" loading="lazy"
+             alt="The right column of the Settings tab, in the dark theme. An Options panel with Poll every set to 1 minute, Issue labels to count set to bug, a Show archived repositories checkbox, a Save settings button and a Where settings are saved disclosure. An Updates panel reading Repo Pulse v1.1.0, checked just now, up to date, with a Check now button. A This browser panel with Theme set to Match the system and checkboxes for Reduce motion, Hide commits by bots, Announce changes to screen readers, and Browser notification for new PRs and failing checks.">
+        <figcaption>The right column of Settings: shared options, the update panel, and the per-browser preferences.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="wrap" id="tv" aria-labelledby="tv-title">
+    <div class="sect-head">
+      <h2 id="tv-title">TV mode for the wall</h2>
+      <p>Open <code>http://127.0.0.1:4317/?tv=1</code> on the display. The cards fill the screen, the numbers get big enough to read from across the room, the latest commits sit inside each card, and the navigation, the status buttons and the tables are hidden. It defaults to dark; add <code>&amp;theme=light</code> to force light. If the display is another machine, run the server where that machine can reach it: keep it on loopback behind a reverse proxy, or bind it to <code>0.0.0.0</code> only when nothing fronts it, and set <code>ADMIN_TOKEN</code> so viewers cannot change settings.</p>
+    </div>
+    <figure class="figure">
+      <img src="images/tv.png" width="1920" height="1080" loading="lazy"
+           alt="TV mode on a 1920 by 1080 display in the dark theme. Three repository cards for microsoft/vscode, react/react and vercel/next.js fill the width, each with a checks chip, three large figures for Needs review, Commits 7d and Merged 7d, the branch, last-commit and release line, the counts line, the three oldest open pull requests, and six of the latest commits with their short hashes and ages. Only the title, Live and Updated 9s ago appear above the cards; the navigation and the tables are gone.">
+      <figcaption>TV mode at 1920×1080: three cards, larger type, commits inside the cards, nothing else.</figcaption>
+    </figure>
+  </section>
+
+  <section class="wrap" id="privacy" aria-labelledby="privacy-title">
+    <div class="sect-head">
+      <h2 id="privacy-title">What leaves your machine</h2>
+      <p>Short list. The server has no dependencies and the page has no third-party scripts, fonts or analytics, so there is nothing else to account for.</p>
+    </div>
+    <dl class="ledger">
+      <dt>api.github.com</dt>
+      <dd>Each poll makes two GraphQL requests in parallel, one for the cards and one for the velocity searches, plus one REST call per repository for its Actions runs. That is about 2 points of the token's 5,000-points-per-hour GraphQL budget; the status strip shows what is left.</dd>
+      <dt>your token</dt>
+      <dd>Read once at startup from <code>GITHUB_TOKEN</code>, <code>GH_TOKEN</code> or <code>gh auth token</code>, and sent only to <code>api.github.com</code>. It is never shown anywhere; the console, the setup steps and the Settings tab say which source and which account are in use. For public repositories a token with no scopes is enough.</dd>
+      <dt>update checks</dt>
+      <dd>Shortly after start and about once a month, the server asks GitHub's releases API for this repository; that is the only request the checks make. <code>UPDATE_CHECK=0</code> turns them off. Pressing <strong>Update now</strong> downloads the release zip and <code>SHA256SUMS</code> from GitHub and verifies the checksum before anything is replaced.</dd>
+      <dt>nothing else</dt>
+      <dd>The page uses system fonts and the server sends a strict content security policy, so the browser makes no request except to its own server. Bound to <code>127.0.0.1</code> by default, the server rejects requests whose <code>Host</code> header is not a loopback address or in <code>ALLOWED_HOSTS</code>, and rejects state-changing requests that a browser marks as cross-site, so other websites open in your browser cannot read or change anything.</dd>
+      <dt>on disk</dt>
+      <dd><code>config.json</code> (settings) and <code>snapshot.json</code> (the last fetched data, so a restart shows data immediately) next to <code>server.js</code>. Velocity is computed fresh on every poll; nothing historical is kept. Browser preferences stay in that browser.</dd>
+      <dt>who can see it</dt>
+      <dd>Anyone who can reach the server sees the dashboard for the chosen repositories, fetched with the server's token. Set <code>ADMIN_TOKEN</code> so that changing settings and browsing an owner's full repository list need the token.</dd>
+    </dl>
+  </section>
+
+  <section class="wrap" id="run" aria-labelledby="run-title">
+    <div class="sect-head">
+      <h2 id="run-title">Run it</h2>
+      <p>The release zip holds <code>server.js</code>, <code>public/</code>, the start scripts, <code>package.json</code>, the README and the license. The Dockerfile builds from the same files.</p>
+    </div>
+    <div class="grid">
+      <article class="card">
+        <h3>From the zip</h3>
+<pre><code>1. Install Node.js 18 or newer
+2. Unzip repo-pulse-vX.Y.Z.zip
+3. Windows: double-click start.cmd
+   macOS, Linux: sh start.sh</code></pre>
+        <p>The start scripts open <code>http://127.0.0.1:4317</code> in your browser and start the server again after an update. No <code>chmod</code> needed.</p>
+      </article>
+      <article class="card">
+        <h3>From a terminal</h3>
+<pre><code>node server.js   # or: npm start</code></pre>
+        <p>Set <code>GITHUB_TOKEN</code> in the shell first (<code>export</code> on macOS and Linux, <code>set</code> in cmd, <code>$env:</code> in PowerShell), or run <code>gh auth login</code>. The server prints the address and which token and account it is using. <code>PORT</code> and <code>HOST</code> change where it listens; keep <code>HOST</code> on loopback behind a reverse proxy.</p>
+      </article>
+      <article class="card">
+        <h3>Docker</h3>
+        <p>From a clone of the repository:</p>
+<pre><code>docker build -t repo-pulse .
+docker run -d --name repo-pulse --restart unless-stopped -e GITHUB_TOKEN=… -p 127.0.0.1:4317:4317 -v repo-pulse-data:/data repo-pulse</code></pre>
+        <p>Settings and the cache live in the <code>/data</code> volume; the container reports health through <code>/healthz</code>. There is no <code>gh</code> inside the image, so the token comes from the environment.</p>
+      </article>
+    </div>
+    <div class="prose" style="margin-top:28px">
+      <h3>For a team</h3>
+      <p>Keep the server on loopback and put a reverse proxy with HTTPS (and ideally your SSO) in front of it. Set <code>ADMIN_TOKEN</code> so viewers cannot change settings, and run with <code>ALLOWED_HOSTS</code> naming the public host. Caddy keeps the <code>Host</code> header and streams server-sent events as is:</p>
+<pre><code>pulse.example.com {
+    reverse_proxy 127.0.0.1:4317
+}</code></pre>
+      <p>For nginx, add <code>proxy_set_header Host $host;</code> (or run with <code>TRUST_PROXY=1</code>) and <code>proxy_buffering off;</code> so the event stream is not buffered. The <a href="https://github.com/evansmith-everag/repo-pulse#running-it-for-a-team">README</a> has a systemd unit for a Linux box, Raspberry Pi or NAS, and the Windows Task Scheduler equivalent.</p>
+    </div>
+  </section>
+
+  <section class="wrap" id="faq" aria-labelledby="faq-title">
+    <div class="sect-head">
+      <h2 id="faq-title">Questions</h2>
+    </div>
+    <div class="faq">
+      <details>
+        <summary><h3>Which token does it use, and what access does it need?</h3></summary>
+        <p>In this order: <code>GITHUB_TOKEN</code>, <code>GH_TOKEN</code>, then <code>gh auth token</code> from the GitHub CLI. For public repositories any token works: a classic token needs no scopes, a fine-grained token needs only the default public read access. For private repositories: a classic token with the <code>repo</code> scope, or a fine-grained token with read access to Contents, Issues, Pull requests and Metadata for the repositories you pick. Add Actions read access for the CI column and Dependabot alerts read access for the Alerts column; without them those columns show a dash. The token is read once at startup, so restart after rotating it.</p>
+      </details>
+      <details>
+        <summary><h3>Does it ever show my token?</h3></summary>
+        <p>No. It tells you which source and which account are in use, in the console at startup, in the setup steps, and in the Settings tab. The <code>gh</code> login is convenient but usually carries more scope than this tool needs; if that bothers you, create a read-only fine-grained token and set <code>GITHUB_TOKEN</code>.</p>
+      </details>
+      <details>
+        <summary><h3>How much of my GitHub API budget does it use?</h3></summary>
+        <p>Each poll costs about 2 points of the token's 5,000-points-per-hour GraphQL budget plus one REST call per repository from the separate 5,000-per-hour REST budget. The status strip shows the GraphQL points left. Polling runs every 60 seconds by default; the Settings dropdown offers 15 seconds to 1 hour. GitHub answers in about 4 to 6 seconds for busy repositories.</p>
+      </details>
+      <details>
+        <summary><h3>Can I mix organizations, or watch a branch that is not the default?</h3></summary>
+        <p>Yes. Each entry is <code>name</code> (under the organization or user you entered), <code>owner/name</code> (any other owner), or either with <code>@branch</code>. Commits, the checks chip, the week's shape and the last-commit age follow that branch; PR, issue and merged counts are for the whole repository. The same grammar works in <code>config.json</code>: <code>{ "org": "my-org", "repos": ["api", "web@release/2.x", "partner-org/sdk"] }</code>.</p>
+      </details>
+      <details>
+        <summary><h3>What happens when a poll fails, GitHub rate-limits the server, or the token expires?</h3></summary>
+        <p>After a failed poll the interval doubles (with jitter) up to 30 minutes. A rate-limit answer pauses polling until the time GitHub gives, and the bar says when polling resumes. A rejected or expired token stops polling; the dot turns red and a banner says what to do, and <strong>Refresh now</strong> still retries. If the data is older than two poll intervals, an amber bar says how old it is and the cards dim. If the velocity request or an Actions call fails, only those cells go blank; the cards still update.</p>
+      </details>
+      <details>
+        <summary><h3>How do updates work, and can I roll back?</h3></summary>
+        <p>The server checks this project's GitHub releases about ten seconds after it starts and then about once a month, and says so in the console. When a newer release exists, the dashboard shows a bar with the version, a link to the release notes and an <strong>Update now</strong> button; Settings has the same plus <strong>Check now</strong>. Updating downloads the release zip and <code>SHA256SUMS</code>, verifies the checksum, replaces <code>server.js</code>, <code>public/index.html</code>, <code>package.json</code>, <code>README.md</code> and <code>LICENSE</code> in place, keeps the previous copies in <code>.previous/</code>, and exits with code 75; the start scripts, systemd and Docker's restart policy bring it back, and a hand-run <code>node server.js</code> needs starting again. To roll back, copy the files from <code>.previous/</code> over the current ones and restart. Inside the Docker image it says to pull the newer image instead; inside a git checkout, <code>git pull</code> instead.</p>
+      </details>
+      <details>
+        <summary><h3>Can I run it for a whole team?</h3></summary>
+        <p>Yes: loopback plus a reverse proxy with HTTPS, <code>ALLOWED_HOSTS</code> for the public host name, and <code>ADMIN_TOKEN</code> so viewers cannot change settings or browse the owner's full repository list. Optional webhooks (<code>WEBHOOK_SECRET</code> and a GitHub webhook at <code>https://&lt;host&gt;/webhook</code>) refresh within a few seconds of a push; the server checks the signature and ignores replayed deliveries. Webhooks need the server to be reachable from GitHub, so they only work on a web server, not on localhost.</p>
+      </details>
+      <details>
+        <summary><h3>Is this a DORA or engineering-intelligence tool?</h3></summary>
+        <p>No. It shows the last seven days against the seven before, for a few repositories, computed fresh from GitHub on every poll; it keeps no history and knows nothing outside GitHub. It is probably not the right tool if you need trends over months, if you watch many repositories (three by default, nine at most, and more repositories mean a slower poll), or if you need data from GitLab, Jira or per-person reporting across an organization.</p>
+      </details>
+      <details>
+        <summary><h3>Can scripts or monitors read the data?</h3></summary>
+        <p><code>GET /api/snapshot</code> returns the same JSON the page receives, with an <code>ETag</code>; send <code>If-None-Match</code> to get a <code>304</code> when nothing changed. <code>GET /healthz</code> returns <code>200</code> when the token works and data has been fetched, otherwise <code>503</code>, which suits Docker health checks and uptime monitors. <code>GET /api/update</code> returns the running version and the latest release seen.</p>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><a class="wordmark" href="#main">Repo Pulse</a></p>
+    <p>Public domain, under the Unlicense. <a href="https://github.com/evansmith-everag/repo-pulse">Source on GitHub</a> · <a href="https://github.com/evansmith-everag/repo-pulse/releases/latest">Latest release</a> · <a href="https://github.com/evansmith-everag/repo-pulse#readme">README</a></p>
+    <p>This site is a single HTML file with no scripts beyond the theme switch, no web fonts and no analytics. Screenshots were taken against public repositories.</p>
+  </div>
+</footer>
+
+<script>
+  /* Theme switch: system → light → dark. Also points the hero <picture> at the matching screenshot. */
+  (function () {
+    var key = 'repo-pulse-site:theme', b = document.getElementById('theme'), src = document.getElementById('shot-src'), t = 'system';
+    try { t = localStorage.getItem(key) || 'system'; } catch (e) {}
+    function apply() {
+      if (t === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+      if (src) src.media = t === 'dark' ? 'all' : t === 'light' ? 'not all' : '(prefers-color-scheme: dark)';
+      b.textContent = 'Theme: ' + t;
+      b.setAttribute('aria-label', 'Theme: ' + t + '. Press to change.');
+    }
+    b.onclick = function () { t = t === 'system' ? 'light' : t === 'light' ? 'dark' : 'system'; try { localStorage.setItem(key, t); } catch (e) {} apply(); };
+    apply(); b.hidden = false;
+  })();
+</script>
+</body>
+</html>

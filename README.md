@@ -2,6 +2,24 @@
 
 A live dashboard for up to three GitHub repositories under any organization or user your token can see. It answers, at a glance, whether code is moving and whether anything is waiting on you: pull requests that need review, failing checks on the default branch, what shipped last, and what landed in the past week. It's one Node.js file plus one HTML file, no dependencies, no build step, and it runs on Windows, macOS and Linux.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/cards-dark.png">
+  <img src="docs/images/cards-light.png" width="1280" alt="Repo Pulse dashboard watching microsoft/vscode, react/react and vercel/next.js: each card shows the checks chip for the watched branch, pull requests that need review with the age of the oldest, commits and merges in the last seven days with a seven-day shape, the latest release, issue counts, and the three oldest open pull requests with their review state.">
+</picture>
+
+The velocity table under the cards compares this week with last, per repository and in total:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/velocity-dark.png">
+  <img src="docs/images/velocity-light.png" width="1280" alt="The Velocity table: merged and opened pull requests with week-over-week arrows, median cycle time and first-review time, commits, people and top-contributor share, issues opened and closed, stale pull requests, CI failures out of total runs with the failing workflow named, and security alerts, with a totals row.">
+</picture>
+
+TV mode fills a wall display with the cards and the latest commits:
+
+<img src="docs/images/tv.png" width="1280" alt="TV mode at 1920 by 1080: three large cards with big numbers for needs review, commits and merged, the checks chip, release, counts, the oldest open pull requests and six recent commits each, with the navigation and commit feed hidden.">
+
+The screenshots show public repositories; the full dashboard in [dark](docs/images/dashboard-dark.png) and [light](docs/images/dashboard-light.png), and the [Settings tab](docs/images/settings.png), are in `docs/images`. There is also a [product page](https://evansmith-everag.github.io/repo-pulse/) built from the same files.
+
 ## Download and run
 
 1. Install [Node.js](https://nodejs.org) 18 or newer.
@@ -174,7 +192,7 @@ The image listens on all interfaces inside the container (there is no loopback t
 
 Anyone who can reach the server sees the dashboard data for the chosen repositories, fetched with the server's token. With `ADMIN_TOKEN` set, changing settings and browsing an owner's full repository list (names, descriptions, push times for every repository the token can see) need the token; without it, anyone who can reach the page can do both.
 
-When bound to localhost (the default) the server rejects requests whose `Host` header isn't a loopback address or in `ALLOWED_HOSTS`, and it rejects state-changing requests that a browser marks as cross-site. That keeps other websites open in your browser from reading or changing anything. Responses carry a strict content security policy and the page uses system fonts, so the only network traffic is to `api.github.com`.
+When bound to localhost (the default) the server rejects requests whose `Host` header isn't a loopback address or in `ALLOWED_HOSTS`, and it rejects state-changing requests that a browser marks as cross-site. That keeps other websites open in your browser from reading or changing anything. Responses carry a strict content security policy and the page uses system fonts, so the only network traffic is to GitHub: `api.github.com` for polling and update checks, plus GitHub's release download when you press Update now.
 
 ## Tests
 
