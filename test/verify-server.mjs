@@ -154,8 +154,10 @@ try {
     await post('/api/config', { ...good, repos: ['docs'], pollSeconds: 60 });
     const manualRes = await manual;
     ok('manual refresh answered 200', manualRes.status === 200, String(manualRes.status));
-    await waitForFetch();
-    await sleep(6000);
+    // Two GitHub fetches run back to back here (the manual one, then the queued settings one); wait for the second
+    // to be broadcast rather than guessing how long GitHub takes today.
+    for (let i = 0; i < 90 && !/"reason":"settings"/.test(events.join('')); i++) await sleep(500);
+    await sleep(500);
     const text = events.join('');
     const snaps = [...text.matchAll(/event: snapshot\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]));
     const afterSave = text.slice(text.indexOf('event: config'));
