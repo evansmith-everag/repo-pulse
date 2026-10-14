@@ -25,7 +25,13 @@ const BROWSERS = [
   '/usr/bin/microsoft-edge', '/usr/bin/google-chrome', '/usr/bin/chromium',
 ].filter((p) => p && existsSync(p));
 let pass = 0, fail = 0;
-const ok = (name, cond, detail = '') => { if (cond) { pass++; console.log(`  PASS ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}`); } };
+// Uncaught exceptions, policy violations and Trusted Types refusals only show in the page's console; the harness collects
+// them and the next check fails with them, so an error lands on the step that caused it.
+const pageErrors = [];
+const ok = (name, cond, detail = '') => {
+  const errs = pageErrors.splice(0);
+  if (cond && !errs.length) { pass++; console.log(`  PASS ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}${errs.length ? ` | page errors: ${errs.join(' | ')}` : ''}`); }
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (!BROWSERS.length) { console.log('No Edge or Chrome found. Set REPO_PULSE_BROWSER to the browser executable.'); process.exit(2); }
@@ -73,8 +79,6 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((r) => (ws.onopen = r));
   let seq = 0; const waiting = new Map();
-  // Uncaught exceptions, policy violations and Trusted Types refusals only show in the page's console, so collect them.
-  const pageErrors = [];
   ws.onmessage = (m) => {
     const msg = JSON.parse(m.data);
     if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
@@ -96,12 +100,13 @@ try {
   const snapshot = (expr) => evalJs(`handleSnapshot(${expr})`);
   const setTheme = (v) => evalJs(`var t = document.getElementById('pref-theme'); t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event('change'));`);
   const nav = async (url) => { await send('Page.navigate', { url }); await sleep(400); };
+  const viewport = async (width) => { await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false }); await until(`innerWidth === ${width}`, 3000); };
 
   await send('Page.enable');
   await send('Runtime.enable');
   await send('Log.enable');
   // The window-size flag is not always honoured by a headless browser; pin the viewport so layout checks are deterministic.
-  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await viewport(1280);
 
   console.log('== Fixture dashboard ==');
   await nav(`${FIX}/`);
@@ -112,7 +117,7 @@ try {
   ok('label counts appear in the counts line', /7 bug/.test(await evalJs(`document.querySelectorAll('.card.ci-failing .meta')[1].textContent`)));
   ok('CI failures this week show on the card with the failing workflow', /checks 7d: 16 passed · 4 failed.*failing now: Nightly/.test(await text('.card.ci-failing .meta.ci')) && (await evalJs(`document.querySelector('.card.ci-failing .meta.ci a')?.href`)) === 'https://github.com/example/alpha/actions/runs/1', await text('.card.ci-failing .meta.ci'));
   ok('open security alerts show on the card', /2 open security alerts/.test(await text('.card.ci-failing')));
-  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.querySelectorAll('#velocity-total th, #velocity-total td').length`)) === 11 && (await evalJs(`document.querySelector('#velocity-body th').scope`)) === 'row');
+  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.getElementById('velocity-total').cells.length`)) === 11 && (await evalJs(`document.querySelector('#velocity-body th').scope`)) === 'row');
   const alphaRow = await evalJs(`[...document.querySelectorAll('#velocity-body tr')[0].cells].map(c => c.textContent)`);
   ok('velocity cells carry deltas, medians, people, issues, stale PRs, CI and alerts', alphaRow[1] === '5↑2' && alphaRow[3] === '20h' && alphaRow[4] === '4h' && alphaRow[5] === '18↑6' && alphaRow[6] === '3 · top 50%' && alphaRow[7] === '+9 / −4 (+5)' && alphaRow[8] === '2' && alphaRow[9] === '4 / 20 · Nightly' && alphaRow[10] === '2', JSON.stringify(alphaRow));
   ok('a repository without Actions shows a dash for CI', (await evalJs(`document.querySelectorAll('#velocity-body tr')[1].cells[9].textContent`)) === '—');
@@ -121,9 +126,14 @@ try {
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))`);
   ok('"v" shows it again', !(await hidden('#velocity')));
   // the stat tiles only fold inside a card narrower than the repo grid ever makes one
-  await send('Emulation.setDeviceMetricsOverride', { width: 1060, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(300);
-  ok('three cards across at 1060px keep three stat tiles per row', (await evalJs(`getComputedStyle(document.querySelector('.stats')).gridTemplateColumns.split(' ').length`)) === 3 && (await evalJs(`document.querySelectorAll('.card').length`)) >= 3, await evalJs(`getComputedStyle(document.querySelector('.stats')).gridTemplateColumns`));
-  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(300);
+  const tileColumns = () => evalJs(`getComputedStyle(document.querySelector('.stats')).gridTemplateColumns`);
+  await viewport(1060);
+  let cols = await tileColumns();
+  ok('three cards across at 1060px keep three stat tiles per row', cols.split(' ').length === 3, cols);
+  await viewport(300);
+  cols = await tileColumns();
+  ok('a 300px phone folds the tiles to two per row', cols.split(' ').length === 2, cols);
+  await viewport(1280);
 
   // an available release shows an update bar; the Settings panel mirrors it
   await snapshot(`{ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } }`);
@@ -274,10 +284,11 @@ try {
   ok('inactive tab is out of the Tab order', (await evalJs(`document.getElementById('tab-settings').tabIndex`)) === -1);
   ok('focus survives a redraw', await evalJs(`(() => { var a = document.querySelector('.card .repo-link'); a.focus(); draw(); return document.activeElement === document.querySelector('.card .repo-link'); })()`));
   await sleep(300); // let any late console entries arrive
-  ok('the page raised no uncaught errors, policy violations or Trusted Types refusals', pageErrors.length === 0, pageErrors.slice(0, 5).join(' | '));
+  ok('the page raised no uncaught errors, policy violations or Trusted Types refusals after the last step', true);
 } catch (err) {
   console.log('ERROR ' + err.message); fail++;
 } finally {
+  if (pageErrors.length) console.log(`  page errors after the last check: ${pageErrors.join(' | ')}`);
   ws?.close();
   // The launcher process we spawned is not the browser that ends up running (Edge re-executes itself), so killing it
   // leaves the real browser behind holding the profile. Ask the browser to close itself over DevTools instead.

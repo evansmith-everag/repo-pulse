@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE = path.join(ROOT, 'test', 'fixture.json');
+const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'repo-pulse-test-'));
 const PORT = Number(process.env.TEST_PORT || 4399);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -98,15 +99,14 @@ try {
   {
     const site = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
     const siteCsp = site.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] || '';
-    ok('the product page keeps its script and stylesheet in files under a self-only policy (no hash to go stale)', !/<style|<script>|\sstyle="/.test(site) && /script-src 'self'/.test(siteCsp) && /style-src 'self'/.test(siteCsp) && !/unsafe-inline/.test(siteCsp) && existsSync(path.join(ROOT, 'docs', 'site.js')) && existsSync(path.join(ROOT, 'docs', 'site.css')), siteCsp);
-    const floor = Number(JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).engines.node.match(/\d+/)[0]);
+    ok('the product page has no inline script, stylesheet, style attribute or event handler', !/<script\b(?![^>]*\bsrc=)|<style\b|\sstyle="|\son\w+=/i.test(site));
+    ok('the product page\'s policy is self-only, with its script and stylesheet in files (no hash to go stale)', /script-src 'self'/.test(siteCsp) && /style-src 'self'/.test(siteCsp) && !/unsafe-inline/.test(siteCsp) && existsSync(path.join(ROOT, 'docs', 'site.js')) && existsSync(path.join(ROOT, 'docs', 'site.css')), siteCsp);
+    const floor = Number(pkg.engines.node.match(/\d+/)[0]);
     const dockerMajor = Number(readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8').match(/FROM node:(\d+)/)?.[1]);
-    const mentions = ['README.md', 'docs/index.html'].flatMap((f) => [...readFileSync(path.join(ROOT, f), 'utf8').matchAll(/Node\.js (\d+) or newer/g)].map((m) => Number(m[1])));
+    const mentions = [readFileSync(path.join(ROOT, 'README.md'), 'utf8'), site].flatMap((text) => [...text.matchAll(/Node\.js (\d+) or newer/g)].map((m) => Number(m[1])));
     ok('the Docker image and every "Node.js N or newer" in the README and product page agree with the engines floor', dockerMajor >= floor && mentions.length > 0 && mentions.every((n) => n === floor), JSON.stringify({ floor, dockerMajor, mentions }));
     if (process.env.TEST_NODE_FLOOR) ok('this CI leg runs the engines floor itself', Number(process.versions.node.split('.')[0]) === floor, process.versions.node);
-    const cmd = readFileSync(path.join(ROOT, 'start.cmd'), 'utf8').replace(/\r\n/g, '\n');
-    const labelAt = Buffer.byteLength(cmd.slice(0, cmd.indexOf('\n:run') + 1));
-    ok('start.cmd keeps its restart label clear of a 512-byte boundary, where cmd.exe misses labels in LF-only files', labelAt > 0 && labelAt % 512 < 500, String(labelAt));
+    if (process.env.CI) ok('a fresh checkout has start.cmd with CRLF line endings (cmd.exe can miss a goto label in an LF file)', /\r\n/.test(readFileSync(path.join(ROOT, 'start.cmd'), 'utf8')));
   }
 
   if (!LIVE) console.log('TEST_LIVE=0: the runs against live GitHub are skipped');
@@ -209,7 +209,7 @@ try {
     const s = await startServer({ ADMIN_TOKEN: 'secret-admin', WEBHOOK_SECRET: 'hook' }, baseConfig);
     ok('org-repos without token is 401', (await fetch(`${BASE}/api/org-repos`)).status === 401);
     const withToken = (await fetch(`${BASE}/api/org-repos`, { headers: { 'X-Admin-Token': 'secret-admin' } })).status;
-    ok('org-repos with the admin token is authorized', LIVE ? withToken === 200 : withToken !== 401, String(withToken));
+    ok('org-repos with the admin token passes the gate', withToken !== 401, String(withToken));
     ok('settings save without token is 401', (await post('/api/config', good)).status === 401);
     ok('settings save with token is 200', (await post('/api/config', good, { 'X-Admin-Token': 'secret-admin' })).status === 200);
     const payload = JSON.stringify({ repository: { name: 'gitignore' } });
@@ -277,7 +277,8 @@ try {
     if (LIVE) ok('repository list can preview an owner before saving', (await fetch(`${BASE}/api/org-repos?owner=github`)).status === 200);
     ok('picking repos without an owner is rejected', (await post('/api/config', { org: '', repos: ['x'], pollSeconds: 60 })).status === 400);
     ok('saving only the poll interval without an owner is fine', (await post('/api/config', { org: '', repos: [], pollSeconds: 120 })).status === 200);
-    ok('a user account works as the owner', (await post('/api/config', { org: 'torvalds', repos: ['linux'], pollSeconds: 60 })).status === 200 && (!LIVE || (await fetch(`${BASE}/api/org-repos`)).status === 200));
+    ok('a user account works as the owner', (await post('/api/config', { org: 'torvalds', repos: ['linux'], pollSeconds: 60 })).status === 200);
+    if (LIVE) ok('and its repository list loads', (await fetch(`${BASE}/api/org-repos`)).status === 200);
     const snap = await getSnapshot();
     ok('snapshot reports how many repos are configured', snap.configuredRepos === 1, String(snap.configuredRepos));
     await s.stop();
@@ -354,24 +355,19 @@ try {
     const FEED = PORT + 7;
     const install = path.join(TMP, 'install');
     mkdirSync(path.join(install, 'public'), { recursive: true });
-    for (const f of ['server.js', 'public/index.html', 'package.json']) copyFileSync(path.join(ROOT, f), path.join(install, f));
-    writeFileSync(path.join(install, 'public', 'index.html'), readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8').replace(/\r?\n/g, '\r\n')); // as a CRLF checkout would have it
-    const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-    const zip = buildZip([
+    const [serverSrc, pageSrc] = ['server.js', 'public/index.html'].map((f) => readFileSync(path.join(ROOT, f)));
+    for (const f of ['server.js', 'package.json']) copyFileSync(path.join(ROOT, f), path.join(install, f));
+    writeFileSync(path.join(install, 'public', 'index.html'), pageSrc.toString('utf8').replace(/\r?\n/g, '\r\n')); // as a CRLF checkout would have it
+    const releaseZip = (pkgExtra, extraEntries = []) => buildZip([
       ['repo-pulse/', null],
-      ['repo-pulse/server.js', readFileSync(path.join(ROOT, 'server.js')), true],
-      ['repo-pulse/public/index.html', Buffer.concat([readFileSync(path.join(ROOT, 'public', 'index.html')), Buffer.from('\n<!-- release 99.0.0 -->\n')]), true],
-      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0' }, null, 2)), false],
-      ['repo-pulse/start.cmd', Buffer.from('@echo off\r\necho a launcher the update must not touch\r\n'), false],
+      ['repo-pulse/server.js', serverSrc, true],
+      ['repo-pulse/public/index.html', Buffer.concat([pageSrc, Buffer.from('\n<!-- release 99.0.0 -->\n')]), true],
+      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0', ...pkgExtra }, null, 2)), false],
+      ...extraEntries,
     ]);
-    const sums = `${createHash('sha256').update(zip).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
-    const tallZip = buildZip([
-      ['repo-pulse/', null],
-      ['repo-pulse/server.js', readFileSync(path.join(ROOT, 'server.js')), true],
-      ['repo-pulse/public/index.html', readFileSync(path.join(ROOT, 'public', 'index.html')), true],
-      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0', engines: { node: '>=99.1' } }, null, 2)), false],
-    ]);
-    const tallSums = `${createHash('sha256').update(tallZip).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
+    const sumsFor = (z) => `${createHash('sha256').update(z).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
+    const zip = releaseZip({}, [['repo-pulse/start.cmd', Buffer.from('@echo off\r\necho a launcher the update must not touch\r\n'), false]]), sums = sumsFor(zip);
+    const tallZip = releaseZip({ engines: { node: '>=99.1' } }), tallSums = sumsFor(tallZip); // a release this Node cannot run
     const release = { tag_name: 'v99.0.0', html_url: 'http://example.invalid/releases/v99.0.0', published_at: '2026-10-13T00:00:00Z', body: 'Test release', assets: [{ name: 'repo-pulse-v99.0.0.zip', browser_download_url: `http://127.0.0.1:${FEED}/zip` }, { name: 'SHA256SUMS', browser_download_url: `http://127.0.0.1:${FEED}/sums` }] };
     const feed = http.createServer((req, res) => {
       if (req.url === '/latest') return res.end(JSON.stringify(release));

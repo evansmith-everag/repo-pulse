@@ -70,7 +70,7 @@
   body.stale .repos, body.stale .feed { opacity: .55; }
 
   .repos { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 16px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; container-type: inline-size; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
   .card.ci-failing { border-top: 4px solid var(--bad); }
   .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 0; font: inherit; }
   .card-top .repo-link { font: 600 1.05rem var(--font-body); color: var(--fg); text-decoration: none; overflow-wrap: anywhere; }
@@ -79,10 +79,8 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { font-size: .75rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; cursor: default; line-height: 1.5; }
   .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.muted { color: var(--muted); } .chip.bad { color: var(--bad); font-weight: 600; }
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  /* A card narrower than its three stat tiles can show (large text scale, tiny phone) drops to two tiles per row. The
-     grid's smallest card leaves a 17.4rem content box, so this never fires at ordinary widths. */
-  @container (width < 17rem) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  /* Three tiles across; a card too narrow for them (large text scale, tiny phone) folds to two, then one. */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 5.5rem), 1fr)); gap: 8px; }
   .stat b { display: block; font: 400 2.1rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
   .stat .label { display: block; font-size: .78rem; color: var(--muted); letter-spacing: .01em; }
   .stat .sub { display: block; font-size: .72rem; color: var(--muted); font-family: var(--font-mono); }
@@ -133,8 +131,7 @@
   .velocity .d.up { color: var(--ok); } .velocity .d.down { color: var(--warn); }
   .velocity .warnc { color: var(--warn); font-weight: 500; } .velocity .bad { color: var(--bad); font-weight: 600; }
   .velocity tfoot td, .velocity tfoot th { font-weight: 600; border-bottom: 0; }
-  .velocity tr:empty { display: none; } /* the totals row stays empty with a single repository */
-  .velocity td.wrap { white-space: normal; } /* workflow names run long; the CI cell wraps rather than widening the table */
+  .velocity td.ci { white-space: normal; } /* workflow names run long; the CI cell wraps rather than widening the table */
   .velocity thead th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
   /* Narrower than eleven columns need, each row becomes a card; the heading text travels with each cell as data-label. */
   @container (width < 56rem) {
@@ -143,7 +140,7 @@
     .velocity tr { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; }
     .velocity td.num, .velocity tbody th, .velocity tfoot th { border: 0; padding: 2px 0; text-align: left; white-space: normal; }
     .velocity tbody th, .velocity tfoot th { font-weight: 600; padding-bottom: 6px; }
-    .velocity td.num::before { content: attr(data-label) ": "; content: attr(data-label) ": " / attr(data-label); color: var(--muted); font-size: .8rem; margin-right: 6px; }
+    .velocity td.num::before { content: attr(data-label) ": "; color: var(--muted); font-size: .8rem; margin-right: 6px; }
   }
   .defs { font-size: .82rem; color: var(--muted); }
   .defs summary { cursor: pointer; }
@@ -481,7 +478,8 @@
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let lastDrawKey = '', pendingDraw = null;
   function redraw() {
-    const key = JSON.stringify([snap.repos, snap.error, snap.build, snap.configuredRepos, snap.update?.available, snap.update?.installing]);
+    const { fetchedAt, rateLimit, nextPollAt, reason, ...shown } = snap; // everything but the per-poll churn, so a forgotten churn field fades every poll and gets noticed
+    const key = JSON.stringify(shown);
     const changed = key !== lastDrawKey;
     lastDrawKey = key;
     if (pendingDraw) return pendingDraw;
@@ -563,6 +561,7 @@
   }
 
   function draw() {
+    if (pendingDraw) return; // a pass is already scheduled within a frame and reads the newest state when it runs
     if (!snap) return;
     const hasData = Boolean(snap.fetchedAt);
     const notes = []; // one polite sentence per change, read out together
@@ -916,7 +915,7 @@
       const net = m.issuesOpened7d == null || m.issuesClosed7d == null ? null : m.issuesOpened7d - m.issuesClosed7d;
       tr.append(cell(net == null ? '—' : `+${fmt.format(m.issuesOpened7d)} / −${fmt.format(m.issuesClosed7d)} (${net > 0 ? '+' : ''}${fmt.format(net)})`, net > 0 ? 'warnc' : ''));
       tr.append(cell(m.stalePrs == null ? '—' : fmt.format(m.stalePrs), m.stalePrs > 0 ? 'warnc' : ''));
-      tr.append(cell(c ? `${fmt.format(c.failed7d)} / ${fmt.format(c.runs7d)}${c.failing.length ? ` · ${c.failing.slice(0, 2).join(', ')}${c.failing.length > 2 ? ` +${c.failing.length - 2}` : ''}` : ''}` : '—', 'wrap' + (c?.failing.length ? ' bad' : c?.failed7d ? ' warnc' : ''), c ? `Actions runs on ${c.branch} this week` : 'No Actions runs visible for this repository'));
+      tr.append(cell(c ? `${fmt.format(c.failed7d)} / ${fmt.format(c.runs7d)}${c.failing.length ? ` · ${c.failing.slice(0, 2).join(', ')}${c.failing.length > 2 ? ` +${c.failing.length - 2}` : ''}` : ''}` : '—', 'ci' + (c?.failing.length ? ' bad' : c?.failed7d ? ' warnc' : ''), c ? `Actions runs on ${c.branch} this week` : 'No Actions runs visible for this repository'));
       tr.append(cell(r.alerts == null ? '—' : fmt.format(r.alerts), r.alerts > 0 ? 'bad' : ''));
       body.append(labelCells(tr));
       tot.merged += r.merged7d || 0; if (m.mergedPrev7d == null) tot.prevKnown = false; else tot.mergedPrev += m.mergedPrev7d;
@@ -928,7 +927,8 @@
     }
     const total = $('velocity-total');
     total.replaceChildren();
-    if (repos.length < 2) return;
+    total.hidden = repos.length < 2; // a total of one repository says nothing
+    if (total.hidden) return;
     const net = tot.io - tot.ic;
     const allTh = el('th', null, 'All'); allTh.scope = 'row';
     total.append(allTh);

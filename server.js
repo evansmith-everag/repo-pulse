@@ -19,12 +19,12 @@ const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
 let PKG = {};
 try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
 const VERSION = PKG.version || '0.0.0';
-const semver = (s) => (String(s).match(/^v?(\d+)\.(\d+)\.(\d+)/) || [0, 0, 0, 0]).slice(1, 4).map(Number);
+const semver = (s) => { const m = String(s).match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/) || []; return [1, 2, 3].map((i) => Number(m[i]) || 0); };
 const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 // package.json's engines field is the one place the Node floor is defined; only a lower bound such as ">=22" or
 // ">=22.12" is understood. Below it the server warns and carries on, because an install that updated itself from an
 // older release must still start; the updater refuses a release whose floor this Node does not meet.
-const nodeFloor = (pkg) => { const m = String(pkg.engines?.node || '').match(/^\s*(?:>=|\^|~)?\s*v?(\d+(?:\.\d+){0,2})/); return m ? [...m[1].split('.'), '0', '0'].slice(0, 3).join('.') : '0.0.0'; };
+const nodeFloor = (pkg) => (String(pkg.engines?.node || '').match(/^\s*(?:>=)?\s*v?(\d+(?:\.\d+){0,2})/) || [])[1] || '0';
 const belowNodeFloor = (pkg) => newer(nodeFloor(pkg), process.versions.node);
 if (belowNodeFloor(PKG)) console.error(`Repo Pulse v${VERSION} supports Node.js ${PKG.engines.node}; this is ${process.versions.node}. It may still run, but install a current Node.js from https://nodejs.org`);
 const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
