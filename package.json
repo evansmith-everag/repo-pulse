@@ -1,6 +1,6 @@
 {
   "name": "repo-pulse",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "repository": "github:evansmith-everag/repo-pulse",
   "description": "Live dashboard for a few GitHub repositories: what needs review, checks on the branch, what shipped, what landed this week. One Node file, no dependencies.",
