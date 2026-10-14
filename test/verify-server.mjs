@@ -101,17 +101,19 @@ try {
     const siteCsp = site.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] || '';
     ok('the product page has no inline script, stylesheet, style attribute or event handler', !/<script\b(?![^>]*\bsrc=)|<style\b|\sstyle="|\son\w+=/i.test(site));
     ok('the product page\'s policy is self-only, with its script and stylesheet in files (no hash to go stale)', /script-src 'self'/.test(siteCsp) && /style-src 'self'/.test(siteCsp) && !/unsafe-inline/.test(siteCsp) && existsSync(path.join(ROOT, 'docs', 'site.js')) && existsSync(path.join(ROOT, 'docs', 'site.css')), siteCsp);
+    ok('Dockerfile and .dockerignore ship with the repo', existsSync(path.join(ROOT, 'Dockerfile')) && existsSync(path.join(ROOT, '.dockerignore')));
+    ok('engines.node is a lower bound the server and the updater understand', /^>=\d+(\.\d+){0,2}$/.test(pkg.engines.node), pkg.engines.node);
     const floor = Number(pkg.engines.node.match(/\d+/)[0]);
     const dockerMajor = Number(readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8').match(/FROM node:(\d+)/)?.[1]);
-    const mentions = [readFileSync(path.join(ROOT, 'README.md'), 'utf8'), site].flatMap((text) => [...text.matchAll(/Node\.js (\d+) or newer/g)].map((m) => Number(m[1])));
-    ok('the Docker image and every "Node.js N or newer" in the README and product page agree with the engines floor', dockerMajor >= floor && mentions.length > 0 && mentions.every((n) => n === floor), JSON.stringify({ floor, dockerMajor, mentions }));
+    const mentions = [readFileSync(path.join(ROOT, 'README.md'), 'utf8'), site].map((text) => [...text.matchAll(/Node(?:\.js)?(?:\]\([^)]*\))? (\d+) or newer/g)].map((m) => Number(m[1]))); // "Node.js 22 or newer", also as a Markdown link
+    ok('the Docker image and every "Node.js N or newer" in the README and the product page agree with the engines floor', dockerMajor >= floor && mentions.every((list) => list.length > 0 && list.every((n) => n === floor)), JSON.stringify({ floor, dockerMajor, mentions }));
     if (process.env.TEST_NODE_FLOOR) ok('this CI leg runs the engines floor itself', Number(process.versions.node.split('.')[0]) === floor, process.versions.node);
     if (process.env.CI) ok('a fresh checkout has start.cmd with CRLF line endings (cmd.exe can miss a goto label in an LF file)', /\r\n/.test(readFileSync(path.join(ROOT, 'start.cmd'), 'utf8')));
   }
 
-  if (!LIVE) console.log('TEST_LIVE=0: the runs against live GitHub are skipped');
-  if (LIVE) {
-    console.log('== Run 1: defaults, live GitHub ==');
+  if (!LIVE) console.log('TEST_LIVE=0: the checks against live GitHub are skipped');
+  console.log('== Run 1: defaults (request handling, then live GitHub) ==');
+  {
     const s = await startServer({}, baseConfig, { cache: false });
     const r1 = await rawRequest('GET //[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
     ok('malformed request line gets 400 and server survives', /HTTP\/1.1 400/.test(r1) && (await fetch(`${BASE}/api/config`)).ok, r1.slice(0, 60));
@@ -146,6 +148,7 @@ try {
     ok('valid save returns full public config', saved.status === 200 && saved.json.pollSeconds === 300 && Array.isArray(saved.json.pollOptions) && saved.json.maxRepos === 3 && 'tokenSource' in saved.json, JSON.stringify(saved.json));
     ok('config after bad saves still has gitignore (nothing silently reset)', JSON.parse(readFileSync(s.cfg, 'utf8')).repos.includes('gitignore'));
 
+    if (LIVE) {
     const first = await waitForFetch();
     ok('first fetch succeeded', Boolean(first.fetchedAt) && !first.error, first.error || '');
     const row = first.repos?.[0] || {};
@@ -199,6 +202,7 @@ try {
     ok('org-repos is open when no ADMIN_TOKEN', (await fetch(`${BASE}/api/org-repos`)).status === 200);
     const preview = await (await fetch(`${BASE}/api/org-repos?owner=torvalds`)).json();
     ok('org-repos previews another owner without saving', Array.isArray(preview.repos) && preview.org === 'torvalds' && typeof preview.truncated === 'boolean', JSON.stringify(preview).slice(0, 120));
+    } // LIVE
     ok('org-repos rejects a bad owner name', (await fetch(`${BASE}/api/org-repos?owner=bad%20name`)).status === 400);
     await s.stop();
     ok('server log has no crash', !/TypeError|unhandled/.test(s.log()), s.log());
@@ -209,7 +213,7 @@ try {
     const s = await startServer({ ADMIN_TOKEN: 'secret-admin', WEBHOOK_SECRET: 'hook' }, baseConfig);
     ok('org-repos without token is 401', (await fetch(`${BASE}/api/org-repos`)).status === 401);
     const withToken = (await fetch(`${BASE}/api/org-repos`, { headers: { 'X-Admin-Token': 'secret-admin' } })).status;
-    ok('org-repos with the admin token passes the gate', withToken !== 401, String(withToken));
+    ok('org-repos with the admin token is authorized (and lists repositories when live)', LIVE ? withToken === 200 : withToken !== 401, String(withToken));
     ok('settings save without token is 401', (await post('/api/config', good)).status === 401);
     ok('settings save with token is 200', (await post('/api/config', good, { 'X-Admin-Token': 'secret-admin' })).status === 200);
     const payload = JSON.stringify({ repository: { name: 'gitignore' } });
@@ -346,7 +350,6 @@ try {
     ok('owner/name works with no default owner at all', (await post('/api/config', { org: '', repos: ['github/gitignore'], pollSeconds: 60 })).status === 200);
     ok('labels with commas or more than five are rejected', (await post('/api/config', { org: 'github', repos: [], pollSeconds: 60, issueLabels: ['a,b'] })).status === 400 && (await post('/api/config', { org: 'github', repos: [], pollSeconds: 60, issueLabels: ['1', '2', '3', '4', '5', '6'] })).status === 400);
     await s.stop();
-    ok('Dockerfile and .dockerignore ship with the repo', existsSync(path.join(ROOT, 'Dockerfile')) && existsSync(path.join(ROOT, '.dockerignore')));
   }
 
   console.log('== Run 9: self-update from a release ==');
@@ -434,8 +437,8 @@ try {
     }
   }
 
-  console.log('== Run 10: rejected token ==');
-  {
+  if (LIVE) {
+    console.log('== Run 10: rejected token ==');
     const s = await startServer({ GITHUB_TOKEN: 'ghp_definitely_invalid_token' }, baseConfig, { cache: false });
     const snap = await waitForFetch(15000);
     ok('a 401 stops polling and explains what to do', typeof snap.tokenProblem === 'string' && /rejected the token/.test(snap.tokenProblem) && snap.nextPollAt === null, JSON.stringify([snap.tokenProblem, snap.nextPollAt]));

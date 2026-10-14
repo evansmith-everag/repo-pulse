@@ -140,7 +140,8 @@
     .velocity tr { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; }
     .velocity td.num, .velocity tbody th, .velocity tfoot th { border: 0; padding: 2px 0; text-align: left; white-space: normal; }
     .velocity tbody th, .velocity tfoot th { font-weight: 600; padding-bottom: 6px; }
-    .velocity td.num::before { content: attr(data-label) ": "; color: var(--muted); font-size: .8rem; margin-right: 6px; }
+    /* The second form names the label for assistive tech (the heading row is hidden here); the first is for browsers without alt text. */
+    .velocity td.num::before { content: attr(data-label) ": "; content: attr(data-label) ": " / attr(data-label); color: var(--muted); font-size: .8rem; margin-right: 6px; }
   }
   .defs { font-size: .82rem; color: var(--muted); }
   .defs summary { cursor: pointer; }
@@ -478,7 +479,7 @@
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   let lastDrawKey = '', pendingDraw = null;
   function redraw() {
-    const { fetchedAt, rateLimit, nextPollAt, reason, ...shown } = snap; // everything but the per-poll churn, so a forgotten churn field fades every poll and gets noticed
+    const { fetchedAt, failedAt, failures, rateLimit, nextPollAt, reason, ...shown } = snap; // everything but the per-poll churn, so a forgotten churn field fades every poll and gets noticed
     const key = JSON.stringify(shown);
     const changed = key !== lastDrawKey;
     lastDrawKey = key;
@@ -487,6 +488,7 @@
     if (plain) { draw(); return Promise.resolve(); }
     const transition = document.startViewTransition(() => { pendingDraw = null; draw(); });
     transition.ready.catch(() => {}); // a newer snapshot can skip this fade before it starts; the DOM is updated either way
+    transition.finished.catch(() => {}); // a draw() error is already reported through updateCallbackDone
     pendingDraw = transition.updateCallbackDone;
     return pendingDraw;
   }
@@ -541,10 +543,11 @@
   }
   function togglePause() {
     paused = !paused; prefs.paused = paused; savePrefs();
+    const said = paused ? 'Live updates paused.' : 'Live updates resumed.';
     let shown = Promise.resolve();
     if (!paused && pendingSnap) { snap = pendingSnap; pendingSnap = null; shown = redraw(); }
     drawPause();
-    shown.then(() => announce(paused ? 'Live updates paused.' : 'Live updates resumed.')); // after the redraw's own announcement on either path
+    shown.catch(() => {}).then(() => announce(said)); // after the redraw's own announcement on either path
   }
   $('pause').onclick = togglePause;
   drawPause();
@@ -561,7 +564,6 @@
   }
 
   function draw() {
-    if (pendingDraw) return; // a pass is already scheduled within a frame and reads the newest state when it runs
     if (!snap) return;
     const hasData = Boolean(snap.fetchedAt);
     const notes = []; // one polite sentence per change, read out together
@@ -814,7 +816,7 @@
       bar.textContent = u.installed ? `Installed v${u.installed}. Restarting; this page reloads when the server is back.` : 'Updating: downloading and verifying the release…';
     } else if (u.available) {
       bar.hidden = false;
-      bar.replaceChildren(`${u.error ? `Update failed: ${u.error}. ` : ''}Repo Pulse v${u.latest} is available (running v${snap.version}). `);
+      bar.replaceChildren(`${u.installError ? `Update failed: ${u.installError.replace(/\.$/, '')}. ` : ''}Repo Pulse v${u.latest} is available (running v${snap.version}). `);
       if (u.url) bar.append(extLink('Release notes', u.url, 'linkbtn'));
       const b = el('button', 'linkbtn', u.container ? 'Pull the newer image' : 'Update now'); b.type = 'button';
       b.disabled = Boolean(u.container);
@@ -849,7 +851,7 @@
     let text = `Repo Pulse v${snap.version}. `;
     if (!u.enabled) text += 'Automatic update checks are off (UPDATE_CHECK=0).';
     else if (!u.checkedAt) text += 'Not checked yet; it checks at startup and about once a month.';
-    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available${u.error ? ` (the last attempt failed: ${u.error})` : ''}.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
+    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available${u.installError ? ` (the last install failed: ${u.installError.replace(/\.$/, '')})` : ''}.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
     if (u.container) text += ' Running in a container, so updates come from pulling the newer image.';
     $('update-status').textContent = text;
     $('update-check').hidden = !u.enabled;
@@ -1264,7 +1266,7 @@
   $('pref-velocity').onchange = () => { prefs.velocity = $('pref-velocity').checked; savePrefs(); drawVelocity(); };
   $('pref-theme').onchange = () => { prefs.theme = $('pref-theme').value; savePrefs(); applyTheme(); };
   $('pref-motion').onchange = () => { prefs.motion = $('pref-motion').checked; savePrefs(); applyTheme(); };
-  $('pref-bots').onchange = () => { prefs.hideBots = $('pref-bots').checked; savePrefs(); if (snap) draw(); };
+  $('pref-bots').onchange = () => { prefs.hideBots = $('pref-bots').checked; savePrefs(); if (snap) redraw(); };
   $('pref-announce').onchange = () => { prefs.announce = $('pref-announce').checked; savePrefs(); };
   $('pref-notify').onchange = async () => {
     prefs.notify = $('pref-notify').checked;

@@ -100,7 +100,7 @@ let pendingReason = null;
 let gapTimer = null;
 const clients = new Set();
 const seenDeliveries = []; // recent webhook delivery ids, so a captured delivery cannot be replayed
-let update = { enabled: UPDATE_CHECK, repo: UPDATE_REPO, current: VERSION, latest: null, available: false, url: null, publishedAt: null, notes: null, checkedAt: null, error: null, installing: false, installed: null, zipUrl: null, sumsUrl: null, zipName: null };
+let update = { enabled: UPDATE_CHECK, repo: UPDATE_REPO, current: VERSION, latest: null, available: false, url: null, publishedAt: null, notes: null, checkedAt: null, error: null, installing: false, installError: null, installed: null, zipUrl: null, sumsUrl: null, zipName: null };
 let updateTimer = null;
 
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
@@ -632,8 +632,8 @@ function scheduleUpdateChecks() {
 }
 
 function publicUpdate() {
-  const { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed } = update;
-  return { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed, container: IN_CONTAINER };
+  const { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installError, installed } = update;
+  return { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installError, installed, container: IN_CONTAINER };
 }
 
 // Installing an update rewrites the server's own code, so it is for administrators: the admin token when one is set,
@@ -690,7 +690,7 @@ async function installUpdate() {
   if (await stat(path.join(ROOT, '.git')).then(() => true, () => false)) throw refuse('This is a git checkout: run git pull (or check out the release tag) instead.');
   try { await writeFile(path.join(ROOT, '.write-test'), ''); await unlink(path.join(ROOT, '.write-test')); }
   catch { throw refuse(`The install folder ${ROOT} is not writable by this process; download the release zip instead.`); }
-  update = { ...update, installing: true, error: null };
+  update = { ...update, installing: true, installError: null };
   broadcast('snapshot', publicSnapshot());
   try {
     log(`downloading ${update.zipName} for v${update.latest}`);
@@ -723,10 +723,10 @@ async function installUpdate() {
     }, 400).unref();
     return { ok: true, version: newPkg.version, restarting: true };
   } catch (err) {
-    update = { ...update, installing: false, error: err.message };
+    update = { ...update, installing: false, installError: err.message }; // kept apart from a failed check's error
     warn(`update failed: ${err.message}`);
     broadcast('snapshot', publicSnapshot());
-    throw Object.assign(new Error(`Update failed: ${err.message}`), { status: 502 });
+    throw Object.assign(new Error(err.message), { status: 502 }); // the page adds its own "Update failed:"
   }
 }
 

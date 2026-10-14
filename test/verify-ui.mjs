@@ -46,7 +46,7 @@ const liveCfg = path.join(TMP, 'config.json');
 const fixCfg = path.join(TMP, 'fixture-config.json');
 writeFileSync(liveCfg, JSON.stringify(LIVE));
 writeFileSync(fixCfg, JSON.stringify(FIXTURE_CFG));
-const serverEnv = { ...process.env, HOST: '127.0.0.1', ADMIN_TOKEN: '', WEBHOOK_SECRET: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '' };
+const serverEnv = { ...process.env, HOST: '127.0.0.1', ADMIN_TOKEN: '', WEBHOOK_SECRET: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '', UPDATE_CHECK: '0' }; // no real release checks: the tests inject update states
 const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(PORT), REPO_PULSE_CONFIG: liveCfg, REPO_PULSE_CACHE: path.join(TMP, 'live-cache.json'), REPO_PULSE_FIXTURE: '' }, stdio: 'ignore' });
 const fixServer = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(FIX_PORT), REPO_PULSE_CONFIG: fixCfg, REPO_PULSE_CACHE: path.join(TMP, 'fix-cache.json'), REPO_PULSE_FIXTURE: path.join(ROOT, 'test', 'fixture.json'), MAX_REPOS: '4' }, stdio: 'ignore' });
 // --disable-dev-shm-usage keeps Chromium alive in containers with a tiny /dev/shm; --remote-allow-origins lets a
@@ -282,7 +282,7 @@ try {
   await evalJs(`location.hash = '#dashboard'`);
   ok('hash change switches the view', await until(`!document.getElementById('view-dashboard').hidden`, 2000));
   ok('inactive tab is out of the Tab order', (await evalJs(`document.getElementById('tab-settings').tabIndex`)) === -1);
-  ok('focus survives a redraw', await evalJs(`(() => { var a = document.querySelector('.card .repo-link'); a.focus(); draw(); return document.activeElement === document.querySelector('.card .repo-link'); })()`));
+  ok('focus survives a redraw', await evalJs(`(async () => { var a = document.querySelector('.card .repo-link'); a.focus(); await redraw(); return document.activeElement === document.querySelector('.card .repo-link'); })()`));
   await sleep(300); // let any late console entries arrive
   ok('the page raised no uncaught errors, policy violations or Trusted Types refusals after the last step', true);
 } catch (err) {
