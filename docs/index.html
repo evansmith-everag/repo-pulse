@@ -276,7 +276,7 @@ docker run -d --name repo-pulse --restart unless-stopped -e GITHUB_TOKEN=… -p 
       </details>
       <details>
         <summary><h3>How do updates work, and can I roll back?</h3></summary>
-        <p>The server checks this project's GitHub releases about ten seconds after it starts and then about once a month, and says so in the console. When a newer release exists, the dashboard shows a bar with the version, a link to the release notes and an <strong>Update now</strong> button; Settings has the same plus <strong>Check now</strong>. Updating downloads the release zip and <code>SHA256SUMS</code>, verifies the checksum, replaces <code>server.js</code>, <code>public/index.html</code>, <code>package.json</code>, <code>README.md</code> and <code>LICENSE</code> in place, keeps the previous copies in <code>.previous/</code>, and exits with code 75; the start scripts, systemd and Docker's restart policy bring it back, and a hand-run <code>node server.js</code> needs starting again. To roll back, copy the files from <code>.previous/</code> over the current ones and restart. Inside the Docker image it says to pull the newer image instead; inside a git checkout, <code>git pull</code> instead.</p>
+        <p>The server checks this project's GitHub releases about ten seconds after it starts and then about once a month, and says so in the console. When a newer release exists, the dashboard shows a bar with the version, a link to the release notes and an <strong>Update now</strong> button; Settings has the same plus <strong>Check now</strong>. Updating downloads the release zip and <code>SHA256SUMS</code>, verifies the checksum, replaces <code>server.js</code>, <code>public/index.html</code>, <code>package.json</code>, <code>README.md</code> and <code>LICENSE</code> in place, keeps the previous copies in <code>.previous/</code>, and exits with code 75; the start scripts, systemd and Docker's restart policy bring it back, and a hand-run <code>node server.js</code> needs starting again. To roll back, copy the files from <code>.previous/</code> over the current ones and restart. Inside the Docker image it says to pull the newer image instead; inside a git checkout, <code>git pull</code> instead. A release that needs a newer Node.js than the one running is refused until you install it.</p>
       </details>
       <details>
         <summary><h3>Can I run it for a whole team?</h3></summary>
@@ -299,7 +299,7 @@ docker run -d --name repo-pulse --restart unless-stopped -e GITHUB_TOKEN=… -p 
   <div class="wrap">
     <p><a class="wordmark" href="#main">Repo Pulse</a></p>
     <p>Public domain, under the Unlicense. <a href="https://github.com/evansmith-everag/repo-pulse">Source on GitHub</a> · <a href="https://github.com/evansmith-everag/repo-pulse/releases/latest">Latest release</a> · <a href="https://github.com/evansmith-everag/repo-pulse#readme">README</a></p>
-    <p>This site is a single HTML file with no scripts beyond the theme switch, no web fonts and no analytics. Screenshots were taken against public repositories.</p>
+    <p>This site is one HTML file, one stylesheet and a small theme script, with no web fonts and no analytics. Screenshots were taken against public repositories.</p>
   </div>
 </footer>
 

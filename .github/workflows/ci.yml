@@ -22,6 +22,7 @@ jobs:
         include:
           - node: 22 # the oldest supported line (engines in package.json): the server suite against live GitHub
             live: true
+            floor: true
           - node: 26 # the current line: the server suite in fixture mode, plus the browser suite (live)
             ui: true
     name: test (Node ${{ matrix.node }})
@@ -34,6 +35,7 @@ jobs:
         run: npm run test:server
         env:
           TEST_LIVE: ${{ matrix.live && '1' || '0' }}
+          TEST_NODE_FLOOR: ${{ matrix.floor && '1' || '' }}
           GITHUB_TOKEN: ${{ matrix.live && secrets.GITHUB_TOKEN || '' }}
       - name: Browser tests
         if: matrix.ui

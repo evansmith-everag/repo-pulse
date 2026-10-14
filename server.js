@@ -19,12 +19,14 @@ const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
 let PKG = {};
 try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
 const VERSION = PKG.version || '0.0.0';
-// package.json's engines field is the one place the Node floor is defined. Below it the server warns and carries on,
-// because an install that updated itself from an older release must still start; the updater refuses a release whose
-// floor this Node does not meet.
-const nodeFloor = (pkg) => Number((pkg.engines?.node || '').match(/\d+/)?.[0]) || 0;
-const NODE_MAJOR = Number(process.versions.node.split('.')[0]);
-if (NODE_MAJOR < nodeFloor(PKG)) console.error(`Repo Pulse v${VERSION} supports Node.js ${nodeFloor(PKG)} or newer; this is ${process.versions.node}. It may still run, but install a current Node.js from https://nodejs.org`);
+const semver = (s) => (String(s).match(/^v?(\d+)\.(\d+)\.(\d+)/) || [0, 0, 0, 0]).slice(1, 4).map(Number);
+const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+// package.json's engines field is the one place the Node floor is defined; only a lower bound such as ">=22" or
+// ">=22.12" is understood. Below it the server warns and carries on, because an install that updated itself from an
+// older release must still start; the updater refuses a release whose floor this Node does not meet.
+const nodeFloor = (pkg) => { const m = String(pkg.engines?.node || '').match(/^\s*(?:>=|\^|~)?\s*v?(\d+(?:\.\d+){0,2})/); return m ? [...m[1].split('.'), '0', '0'].slice(0, 3).join('.') : '0.0.0'; };
+const belowNodeFloor = (pkg) => newer(nodeFloor(pkg), process.versions.node);
+if (belowNodeFloor(PKG)) console.error(`Repo Pulse v${VERSION} supports Node.js ${PKG.engines.node}; this is ${process.versions.node}. It may still run, but install a current Node.js from https://nodejs.org`);
 const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
 const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0' && Boolean(UPDATE_REPO);
 const UPDATE_API = process.env.UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
@@ -127,7 +129,7 @@ async function loadPage() {
       const raw = (await readFile(PAGE_PATH, 'utf8')).replace(/\r\n?/g, '\n');
       const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10);
       // The build id is stamped here, so the policy is computed from exactly the text that is served.
-      const html = raw.replace('__BUILD__', `${SERVER_HASH}.${hash}`);
+      const html = raw.replace('__BUILD__', buildId(hash));
       page = { html, mtimeMs: st.mtimeMs, hash, csp: cspFor(html) };
     }
   } catch (err) {
@@ -135,7 +137,7 @@ async function loadPage() {
   }
   return page;
 }
-const buildId = () => `${SERVER_HASH}.${page.hash}`;
+const buildId = (hash = page.hash) => `${SERVER_HASH}.${hash}`;
 
 // ---------- config ----------
 
@@ -593,8 +595,6 @@ async function fetchOrgRepos(org, force = false) {
 
 // ---------- self-update ----------
 
-const semver = (s) => (String(s).match(/^v?(\d+)\.(\d+)\.(\d+)/) || [0, 0, 0, 0]).slice(1, 4).map(Number);
-const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 
 async function checkForUpdate(reason) {
   if (!UPDATE_CHECK) return update;
@@ -703,7 +703,7 @@ async function installUpdate() {
     for (const need of REQUIRED_IN_RELEASE) if (!files.some((f) => f.target === need)) throw new Error(`the release zip has no ${need}`);
     const newPkg = JSON.parse(files.find((f) => f.target === 'package.json').data.toString('utf8'));
     if (!newer(newPkg.version, VERSION)) throw new Error(`the zip contains v${newPkg.version}, not newer than v${VERSION}`);
-    if (NODE_MAJOR < nodeFloor(newPkg)) throw new Error(`v${newPkg.version} needs Node.js ${nodeFloor(newPkg)} or newer; this is ${process.versions.node}. Install a current Node.js first.`);
+    if (belowNodeFloor(newPkg)) throw new Error(`v${newPkg.version} needs Node.js ${newPkg.engines.node}; this is ${process.versions.node}. Install a current Node.js first.`);
     const backup = path.join(ROOT, '.previous');
     await mkdir(path.join(backup, 'public'), { recursive: true });
     for (const f of files) {
@@ -1014,7 +1014,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 202, { ok: true });
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/index.html')) {
-      if (req.method === 'HEAD') { res.writeHead(200, { ...baseHeaders(), 'Content-Type': MIME['.html'] }); return res.end(); }
+      if (req.method === 'HEAD') { await loadPage(); res.writeHead(200, { ...baseHeaders(), 'Content-Type': MIME['.html'] }); return res.end(); }
       return send(res, 200, (await loadPage()).html, MIME['.html']);
     }
     send(res, 404, { error: 'Not found' });

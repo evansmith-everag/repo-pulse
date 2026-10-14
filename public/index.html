@@ -58,7 +58,7 @@
   .dot.down { background: var(--bad); }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
   #updated.stale { color: var(--warn); }
-  #budget.low, #update-note { color: var(--warn); }
+  #budget.low, #update-note, #update-result { color: var(--warn); }
   .linkbtn { font: inherit; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; min-height: 24px; }
   .linkbtn:disabled { opacity: .5; cursor: default; text-decoration: none; }
   .linkbtn[aria-pressed="true"] { color: var(--warn); }
@@ -80,8 +80,9 @@
   .chip { font-size: .75rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; cursor: default; line-height: 1.5; }
   .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.muted { color: var(--muted); } .chip.bad { color: var(--bad); font-weight: 600; }
   .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  /* A card narrower than its three stat tiles can show (large text scale, tiny phone) drops to two tiles per row. */
-  @container (width < 19rem) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  /* A card narrower than its three stat tiles can show (large text scale, tiny phone) drops to two tiles per row. The
+     grid's smallest card leaves a 17.4rem content box, so this never fires at ordinary widths. */
+  @container (width < 17rem) { .stats { grid-template-columns: repeat(2, 1fr); } }
   .stat b { display: block; font: 400 2.1rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
   .stat .label { display: block; font-size: .78rem; color: var(--muted); letter-spacing: .01em; }
   .stat .sub { display: block; font-size: .72rem; color: var(--muted); font-family: var(--font-mono); }
@@ -327,7 +328,7 @@
             <button class="secondary" id="update-check" type="button">Check now</button>
             <button class="primary" id="update-install" type="button" hidden>Update now</button>
           </div>
-          <p class="help" id="update-status" role="status"></p>
+          <p class="help" id="update-result" role="status"></p>
           <p class="help">Checks the project's GitHub releases at startup and about once a month. Updating replaces the server and page files, keeps the old ones in <code>.previous</code>, and restarts.</p>
         </div>
         <div class="panel">
@@ -475,18 +476,21 @@
   // A live update that changed what is on screen cross-fades through a view transition when the dashboard is showing,
   // the browser has the API and motion is not reduced; otherwise the DOM just swaps. A poll that found nothing new (the
   // usual case), a reconnect replay and a TV wall (capturing a 4K page every minute is not worth a fade) never pay for one.
-  // Resolves once the new DOM is in place.
+  // While a fade's draw is still pending, further snapshots only replace `snap`: draw() marks what is new since the last
+  // pass, so it must run once per batch, and it reads the newest snapshot when it runs. Resolves once the new DOM is in place.
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  let lastDrawKey = '';
+  let lastDrawKey = '', pendingDraw = null;
   function redraw() {
     const key = JSON.stringify([snap.repos, snap.error, snap.build, snap.configuredRepos, snap.update?.available, snap.update?.installing]);
     const changed = key !== lastDrawKey;
     lastDrawKey = key;
+    if (pendingDraw) return pendingDraw;
     const plain = firstDraw || !changed || tv || prefs.motion || reducedMotion.matches || document.hidden || currentTab() !== 'dashboard' || !document.startViewTransition;
     if (plain) { draw(); return Promise.resolve(); }
-    const transition = document.startViewTransition(() => draw());
+    const transition = document.startViewTransition(() => { pendingDraw = null; draw(); });
     transition.ready.catch(() => {}); // a newer snapshot can skip this fade before it starts; the DOM is updated either way
-    return transition.updateCallbackDone;
+    pendingDraw = transition.updateCallbackDone;
+    return pendingDraw;
   }
   function handleSnapshot(next) {
     if (paused && snap?.fetchedAt) { pendingSnap = next; drawPause(); checkBuildFrom(next); return Promise.resolve(); }
@@ -539,9 +543,10 @@
   }
   function togglePause() {
     paused = !paused; prefs.paused = paused; savePrefs();
-    if (!paused && pendingSnap) { snap = pendingSnap; pendingSnap = null; redraw(); }
+    let shown = Promise.resolve();
+    if (!paused && pendingSnap) { snap = pendingSnap; pendingSnap = null; shown = redraw(); }
     drawPause();
-    announce(paused ? 'Live updates paused.' : 'Live updates resumed.');
+    shown.then(() => announce(paused ? 'Live updates paused.' : 'Live updates resumed.')); // after the redraw's own announcement on either path
   }
   $('pause').onclick = togglePause;
   drawPause();
@@ -810,7 +815,7 @@
       bar.textContent = u.installed ? `Installed v${u.installed}. Restarting; this page reloads when the server is back.` : 'Updating: downloading and verifying the release…';
     } else if (u.available) {
       bar.hidden = false;
-      bar.replaceChildren(`Repo Pulse v${u.latest} is available (running v${snap.version}). `);
+      bar.replaceChildren(`${u.error ? `Update failed: ${u.error}. ` : ''}Repo Pulse v${u.latest} is available (running v${snap.version}). `);
       if (u.url) bar.append(extLink('Release notes', u.url, 'linkbtn'));
       const b = el('button', 'linkbtn', u.container ? 'Pull the newer image' : 'Update now'); b.type = 'button';
       b.disabled = Boolean(u.container);
@@ -822,7 +827,7 @@
   async function installUpdate() {
     if (updateBusy) return;
     updateBusy = true;
-    const bar = $('update-bar'), note = $('update-status');
+    const bar = $('update-bar'), note = $('update-result');
     bar.hidden = false; bar.textContent = 'Updating: downloading and verifying the release…'; note.textContent = 'Updating…';
     $('update-install').disabled = true;
     try {
@@ -845,7 +850,7 @@
     let text = `Repo Pulse v${snap.version}. `;
     if (!u.enabled) text += 'Automatic update checks are off (UPDATE_CHECK=0).';
     else if (!u.checkedAt) text += 'Not checked yet; it checks at startup and about once a month.';
-    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
+    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available${u.error ? ` (the last attempt failed: ${u.error})` : ''}.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
     if (u.container) text += ' Running in a container, so updates come from pulling the newer image.';
     $('update-status').textContent = text;
     $('update-check').hidden = !u.enabled;
@@ -853,7 +858,7 @@
   }
   $('update-install').onclick = installUpdate;
   $('update-check').onclick = async () => {
-    const note = $('update-status');
+    const note = $('update-result');
     note.textContent = 'Checking…';
     try {
       const res = await fetch('/api/update/check', { method: 'POST', headers: adminHeaders() });

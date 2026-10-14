@@ -1,5 +1,5 @@
-# The server hashes the page's inline code for its Content-Security-Policy the way browsers do, on LF text, so keep
-# text files LF everywhere. Batch files stay CRLF, which cmd.exe parses most reliably.
+# Text files are LF everywhere. Batch files are CRLF: cmd.exe scans for a goto label in 512-byte blocks and can miss one
+# that straddles a block boundary in an LF-only file, and the launcher's update-restart loop relies on such a label.
 * text=auto eol=lf
 *.cmd text eol=crlf
 *.png binary

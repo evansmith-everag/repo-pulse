@@ -18,12 +18,11 @@
 }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
-/* Browsers without light-dark() (before mid-2024) follow the system preference; the toggle needs light-dark(). */
+/* Browsers without light-dark() (before mid-2024) map the tokens from the system preference or the toggle themselves. */
 @supports not (color: light-dark(white, black)) {
   :root { --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l); --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l); }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
-  }
+  :root[data-theme="dark"] { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); } }
 }
 
 * { box-sizing: border-box; }
@@ -35,7 +34,6 @@ p { text-wrap: pretty; }
 a { color: var(--accent); text-underline-offset: 2px; }
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .skip { position: absolute; left: 16px; top: -6rem; z-index: 10; background: var(--panel); color: var(--fg); border: 1px solid var(--accent); border-radius: 6px; padding: 8px 12px; text-decoration: none; }
 .skip:focus { top: 16px; }
 
@@ -61,7 +59,7 @@ p:last-child { margin-bottom: 0; }
 .sect-head p { color: var(--muted); }
 section { padding-block: 56px; }
 section + section, .shot + section { border-top: 1px solid var(--line); }
-.num, .stat b { font-variant-numeric: tabular-nums; }
+.stat b { font-variant-numeric: tabular-nums; }
 code { font-family: var(--font-mono); font-size: .88em; overflow-wrap: anywhere; }
 p code, li code, dd code, summary code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 pre { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; overflow-x: auto; font: .85rem/1.55 var(--font-mono); margin: 0 0 12px; color: var(--fg); }
@@ -99,13 +97,9 @@ figcaption { font-size: .85rem; color: var(--muted); margin-top: 10px; max-width
 .stat .label { display: block; font-size: .78rem; color: var(--muted); }
 .stat .sub { display: block; font: .72rem var(--font-mono); color: var(--muted); }
 .chip { display: inline-block; font-size: .75rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; line-height: 1.5; }
-.chip.ok { color: var(--ok); } .chip.bad { color: var(--bad); font-weight: 600; } .chip.muted { color: var(--muted); } .chip.warn { color: var(--warn); }
+.chip.ok { color: var(--ok); } .chip.bad { color: var(--bad); font-weight: 600; } .chip.muted { color: var(--muted); }
 .meta { font: .8rem/1.6 var(--font-mono); color: var(--muted); }
 .meta a { text-decoration: none; }
-.meta .bad { color: var(--bad); }
-.cols { columns: 2; column-gap: 24px; font-size: .95rem; }
-.cols li { break-inside: avoid; }
-@media (max-width: 40rem) { .cols { columns: 1; } }
 
 /* Steps: numbered with the serif figure, as the dashboard's setup panel numbers its steps. */
 .steps { list-style: none; padding: 0; margin: 0; counter-reset: step; display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }

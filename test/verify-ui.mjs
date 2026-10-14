@@ -120,6 +120,10 @@ try {
   ok('"v" hides the velocity table and remembers it', await hidden('#velocity') && /"velocity":false/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))`);
   ok('"v" shows it again', !(await hidden('#velocity')));
+  // the stat tiles only fold inside a card narrower than the repo grid ever makes one
+  await send('Emulation.setDeviceMetricsOverride', { width: 1060, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(300);
+  ok('three cards across at 1060px keep three stat tiles per row', (await evalJs(`getComputedStyle(document.querySelector('.stats')).gridTemplateColumns.split(' ').length`)) === 3 && (await evalJs(`document.querySelectorAll('.card').length`)) >= 3, await evalJs(`getComputedStyle(document.querySelector('.stats')).gridTemplateColumns`));
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false }); await sleep(300);
 
   // an available release shows an update bar; the Settings panel mirrors it
   await snapshot(`{ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } }`);
@@ -129,6 +133,9 @@ try {
   await evalJs(`document.getElementById('tab-dashboard').click()`);
   await snapshot(`{ ...snap, update: { ...snap.update, available: false } }`);
   ok('the bar disappears when nothing is available', await hidden('#update-bar'));
+  await evalJs(`window.__fetch = window.fetch; window.fetch = () => Promise.reject(new Error('offline')); document.getElementById('update-check').click();`);
+  ok('"Check now" reports in its own status line and leaves the version summary alone', await until(`/Could not check: offline/.test(document.getElementById('update-result').textContent)`, 3000) && /^Repo Pulse v/.test(await text('#update-status')), `${await text('#update-result')} | ${await text('#update-status')}`);
+  await evalJs(`window.fetch = window.__fetch;`);
   ok('failing checks mark the card and chip', await evalJs(`document.querySelector('.card.ci-failing .chip.bad')?.textContent`) === 'main ● failing');
   // The fixture's dates are fixed, so the age keeps growing: accept any compact duration rather than today's value.
   ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /^oldest \d+(m|h|d|mo|y)$/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
