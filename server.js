@@ -610,7 +610,7 @@ async function checkForUpdate(reason) {
     update = {
       ...update, latest, available: newer(latest, VERSION) && Boolean(zip && sums), url: rel.html_url || null, publishedAt: rel.published_at || null,
       notes: String(rel.body || '').slice(0, 4000), zipUrl: zip?.browser_download_url || null, sumsUrl: sums?.browser_download_url || null, zipName: zip?.name || null,
-      checkedAt: new Date().toISOString(), error: null,
+      checkedAt: new Date().toISOString(), error: null, installError: null, // a good check also retires the last install failure
     };
     log(update.available ? `update available: v${latest} (running v${VERSION}); install from Settings or POST /api/update` : `up to date at v${VERSION} (checked ${reason})`);
   } catch (err) {
@@ -726,7 +726,7 @@ async function installUpdate() {
     update = { ...update, installing: false, installError: err.message }; // kept apart from a failed check's error
     warn(`update failed: ${err.message}`);
     broadcast('snapshot', publicSnapshot());
-    throw Object.assign(new Error(err.message), { status: 502 }); // the page adds its own "Update failed:"
+    throw Object.assign(new Error(`Update failed: ${err.message}`), { status: 502 });
   }
 }
 

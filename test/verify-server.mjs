@@ -397,6 +397,8 @@ try {
       await post('/api/update/check', '');
       const bad = await post('/api/update', '');
       ok('a checksum mismatch refuses the update and leaves the files alone', bad.status === 502 && /SHA256SUMS/.test(bad.json?.error || '') && JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === pkg.version, JSON.stringify(bad.json));
+      const afterBad = await (await fetch(`${BASE}/api/update`)).json();
+      ok('the failure is a full sentence in the reply and an install error apart from the check state', /^Update failed: /.test(bad.json?.error || '') && /SHA256SUMS/.test(afterBad.installError || '') && afterBad.error === null && afterBad.available === true, JSON.stringify(afterBad));
       // a release whose Node floor this process does not meet must be refused before anything is written
       release.assets[0].browser_download_url = `http://127.0.0.1:${FEED}/tallzip`;
       release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/tallsums`;
@@ -406,6 +408,7 @@ try {
       release.assets[0].browser_download_url = `http://127.0.0.1:${FEED}/zip`;
       release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/sums`;
       await post('/api/update/check', '');
+      ok('a later successful check retires the install error', (await (await fetch(`${BASE}/api/update`)).json()).installError === null);
       const inst = await post('/api/update', '');
       ok('installing answers ok and announces a restart', inst.status === 200 && inst.json?.ok === true && inst.json.version === '99.0.0' && inst.json.restarting === true, JSON.stringify(inst.json));
       const code = await new Promise((r) => { if (s.child.exitCode !== null) return r(s.child.exitCode); s.child.on('exit', (c) => r(c)); setTimeout(() => r('timeout'), 10000); });

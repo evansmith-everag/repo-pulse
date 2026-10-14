@@ -141,7 +141,7 @@
     .velocity td.num, .velocity tbody th, .velocity tfoot th { border: 0; padding: 2px 0; text-align: left; white-space: normal; }
     .velocity tbody th, .velocity tfoot th { font-weight: 600; padding-bottom: 6px; }
     /* The second form names the label for assistive tech (the heading row is hidden here); the first is for browsers without alt text. */
-    .velocity td.num::before { content: attr(data-label) ": "; content: attr(data-label) ": " / attr(data-label); color: var(--muted); font-size: .8rem; margin-right: 6px; }
+    .velocity td.num::before { content: attr(data-label) ": "; content: attr(data-label) ": " / attr(data-label) ": "; color: var(--muted); font-size: .8rem; margin-right: 6px; }
   }
   .defs { font-size: .82rem; color: var(--muted); }
   .defs summary { cursor: pointer; }
@@ -808,6 +808,7 @@
   // ----- updates -----
   // The server checks its own GitHub releases; the page offers the install and rides out the restart that follows.
   let expectRestart = false, updateBusy = false;
+  const installFailure = (u) => u.installError?.replace(/\.$/, ''); // the reason reads inside a sentence of its own
   function drawUpdate() {
     const u = snap?.update, bar = $('update-bar');
     if (!u) { bar.hidden = true; return; }
@@ -816,7 +817,7 @@
       bar.textContent = u.installed ? `Installed v${u.installed}. Restarting; this page reloads when the server is back.` : 'Updating: downloading and verifying the release…';
     } else if (u.available) {
       bar.hidden = false;
-      bar.replaceChildren(`${u.installError ? `Update failed: ${u.installError.replace(/\.$/, '')}. ` : ''}Repo Pulse v${u.latest} is available (running v${snap.version}). `);
+      bar.replaceChildren(`${u.installError ? `Update failed: ${installFailure(u)}. ` : ''}Repo Pulse v${u.latest} is available (running v${snap.version}). `);
       if (u.url) bar.append(extLink('Release notes', u.url, 'linkbtn'));
       const b = el('button', 'linkbtn', u.container ? 'Pull the newer image' : 'Update now'); b.type = 'button';
       b.disabled = Boolean(u.container);
@@ -840,8 +841,10 @@
       note.textContent = bar.textContent;
       setConnection();
     } catch (err) {
-      bar.textContent = `Update failed: ${err.message}`;
-      note.textContent = `Update failed: ${err.message}`;
+      const text = /^Update failed/.test(err.message) ? err.message : `Update failed: ${err.message}`; // a 502 arrives prefixed, a refusal does not
+      note.textContent = text;
+      drawUpdate(); // an install failure is in the snapshot (the server broadcasts before answering), so the bar keeps its controls
+      if (!snap?.update?.installError) bar.prepend(`${text} `); // a refusal is not broadcast, so say it here
       if (/Admin token/.test(err.message)) showTab('settings');
     } finally { updateBusy = false; $('update-install').disabled = false; }
   }
@@ -851,7 +854,7 @@
     let text = `Repo Pulse v${snap.version}. `;
     if (!u.enabled) text += 'Automatic update checks are off (UPDATE_CHECK=0).';
     else if (!u.checkedAt) text += 'Not checked yet; it checks at startup and about once a month.';
-    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available${u.installError ? ` (the last install failed: ${u.installError.replace(/\.$/, '')})` : ''}.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
+    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available${u.installError ? ` (the last install failed: ${installFailure(u)})` : ''}.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
     if (u.container) text += ' Running in a container, so updates come from pulling the newer image.';
     $('update-status').textContent = text;
     $('update-check').hidden = !u.enabled;

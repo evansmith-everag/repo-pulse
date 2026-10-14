@@ -141,6 +141,8 @@ try {
   await evalJs(`document.getElementById('tab-settings').click()`);
   ok('the Updates panel reports the version and the available release', await until(`/Repo Pulse v1\\.1\\.0\\. Checked .*v99\\.0\\.0 is available/.test(document.getElementById('update-status').textContent) && !document.getElementById('update-install').hidden`), await text('#update-status'));
   await evalJs(`document.getElementById('tab-dashboard').click()`);
+  await snapshot(`{ ...snap, update: { ...snap.update, installError: 'the downloaded zip does not match SHA256SUMS.' } }`);
+  ok('a failed install is reported in the bar from the snapshot, with the offer still there', /^Update failed: the downloaded zip does not match SHA256SUMS\. Repo Pulse v99\.0\.0 is available/.test(await text('#update-bar')) && (await evalJs(`document.querySelector('#update-bar button')?.textContent`)) === 'Update now' && /\(the last install failed: the downloaded zip does not match SHA256SUMS\)/.test(await text('#update-status')), `${await text('#update-bar')} | ${await text('#update-status')}`);
   await snapshot(`{ ...snap, update: { ...snap.update, available: false } }`);
   ok('the bar disappears when nothing is available', await hidden('#update-bar'));
   await evalJs(`window.__fetch = window.fetch; window.fetch = () => Promise.reject(new Error('offline')); document.getElementById('update-check').click();`);
