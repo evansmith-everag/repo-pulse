@@ -22,7 +22,7 @@ The screenshots show public repositories; the full dashboard in [dark](docs/imag
 
 ## Download and run
 
-1. Install [Node.js](https://nodejs.org) 18 or newer.
+1. Install [Node.js](https://nodejs.org) 22 or newer (18 and 20 have reached end of life).
 2. Download the latest `repo-pulse-vX.Y.Z.zip` from the Releases page and unzip it.
 3. Give it a GitHub token. Either set `GITHUB_TOKEN` (or `GH_TOKEN`), or sign in with the [GitHub CLI](https://cli.github.com) (`gh auth login`) and the server will use that login. See "Which token is used" below.
 4. Start it:
@@ -76,7 +76,7 @@ Below the cards, a **Velocity · last 7 days** table gives the numbers a manager
 - **CI failed:** failed out of total GitHub Actions runs on the watched branch, followed by any workflow whose latest run failed.
 - **Alerts:** open Dependabot security alerts.
 
-Bots (`dependabot`, `renovate`, anything ending in `[bot]` or `-bot`) are left out of the people column and the two medians, because a dependency bot is otherwise the "top contributor" and an auto-merge bot has a one-minute cycle time. Hover a column heading for its definition. The table is hidden in TV mode and can be turned off per browser (or with the `v` key).
+Bots (`dependabot`, `renovate`, anything ending in `[bot]` or `-bot`) are left out of the people column and the two medians, because a dependency bot is otherwise the "top contributor" and an auto-merge bot has a one-minute cycle time. Hover a column heading for its definition, or open "Column definitions" under the table. The table is hidden in TV mode and can be turned off per browser (or with the `v` key).
 
 Below the cards, **Recent commits** merges up to five of the latest commits per repository, newest first. New rows are tagged "new" until the next update, and numbers that changed show their delta (for example `↑2`) until then.
 
@@ -88,7 +88,7 @@ Open `http://127.0.0.1:4317/?tv=1` on a wall display: the layout fills the scree
 
 ### This browser
 
-The Settings tab has a "This browser" panel for preferences that live in the browser, not in the shared settings: theme (system, light, dark), reduce motion, hide commits by bots, announce changes to screen readers, and browser notifications for new pull requests and failing checks. Keyboard shortcuts: `r` refresh, `p` pause, `d` dashboard, `s` settings, `t` cycle theme.
+The Settings tab has a "This browser" panel for preferences that live in the browser, not in the shared settings: theme (system, light, dark), reduce motion, hide commits by bots, announce changes to screen readers, browser notifications for new pull requests and failing checks, and whether the velocity table is shown. Each live update cross-fades into place in browsers with view transitions; "reduce motion" (or the system setting) makes it a plain swap. The theme override drives the page's `color-scheme`, so native controls and scrollbars follow it. Keyboard shortcuts: `r` refresh, `p` pause, `d` dashboard, `s` settings, `t` cycle theme, `v` velocity table.
 
 ## Which token is used
 
@@ -113,7 +113,7 @@ The server checks this project's GitHub releases about ten seconds after it star
 
 Updating downloads the release zip and `SHA256SUMS` from GitHub, verifies the checksum, replaces `server.js`, `public/index.html`, `package.json`, `README.md` and `LICENSE` in place (the previous copies go to `.previous/`), and exits with code 75. `start.cmd` and `start.sh` start the server again on that code, systemd does with `Restart=on-failure`, and Docker does with `--restart unless-stopped`. Open dashboards show "Restarting after the update" and reload themselves when the new version is up. If you ran `node server.js` by hand, start it again. The launcher scripts are never replaced by an update, since Windows reads a running batch file as it goes; download a release zip when you want new launchers.
 
-Installing is an administrative action: it needs the admin token when `ADMIN_TOKEN` is set, and otherwise only works from the machine the server runs on. It refuses inside the Docker image (pull the newer image instead), inside a git checkout (`git pull` instead), and when the install folder isn't writable, which is the case under the systemd unit above unless you add `ReadWritePaths=/opt/repo-pulse`. To roll back, copy the files from `.previous/` over the current ones and restart.
+Installing is an administrative action: it needs the admin token when `ADMIN_TOKEN` is set, and otherwise only works from the machine the server runs on. It refuses inside the Docker image (pull the newer image instead), inside a git checkout (`git pull` instead), and when the install folder isn't writable, which is the case under the systemd unit above unless you add `ReadWritePaths=/opt/repo-pulse`. It also refuses a release whose Node.js requirement is above the running version; install a current Node.js and try again. To roll back, copy the files from `.previous/` over the current ones and restart.
 
 Set `UPDATE_CHECK=0` to turn the checks off; the only request they make is to GitHub's releases API for this repository. A fork can point them at its own releases with `UPDATE_REPO=owner/name` or the `repository` field in `package.json`.
 
@@ -200,7 +200,7 @@ When bound to localhost (the default) the server rejects requests whose `Host` h
 npm test              # both suites; or npm run test:server / npm run test:ui
 ```
 
-Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the live runs. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; it needs Node 22 or newer, and `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs both on every push using the workflow's own token.
+Both suites start their own servers on `TEST_PORT` (default 4399, and the next port up) with throwaway files in the temp directory, so a running instance and your own `config.json` are untouched. `test/verify-server.mjs` covers request validation, auth, webhooks, refresh queueing and throttling, config and cache handling, rejected tokens, proxy support and fixture mode; it needs a GitHub token for the runs against live GitHub, or `TEST_LIVE=0` to skip them. `test/verify-ui.mjs` drives the real page in headless Edge or Chrome over the DevTools protocol against both a fixture server and live GitHub; set `REPO_PULSE_BROWSER` if the browser isn't in a standard location. CI runs the server suite against live GitHub on Node 22 (the oldest supported line, taken from `engines` in `package.json`), and on Node 26 the server suite in fixture mode plus the browser suite, for every push to `main` and every pull request, using the workflow's own token.
 
 ## Releases
 

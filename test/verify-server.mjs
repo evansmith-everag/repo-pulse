@@ -13,12 +13,16 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE = path.join(ROOT, 'test', 'fixture.json');
+const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'repo-pulse-test-'));
 const PORT = Number(process.env.TEST_PORT || 4399);
 const BASE = `http://127.0.0.1:${PORT}`;
+const LIVE = process.env.TEST_LIVE !== '0'; // the runs against live GitHub need a token; CI gives them to one Node line
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = '') => { if (cond) { pass++; console.log(`  PASS ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}`); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The sha256 source expressions for a document's inline <script> or <style> bodies, as a Content-Security-Policy lists them.
+const inlineHashes = (doc, tag) => [...doc.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi'))].map((m) => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
 let current = null;
 
 async function startServer(env, configText, { cache = true, root = ROOT } = {}) {
@@ -45,9 +49,10 @@ async function post(pathname, body, headers = {}) {
   return { status: res.status, json, headers: res.headers };
 }
 const getSnapshot = async () => (await fetch(`${BASE}/api/snapshot`)).json();
-async function waitForFetch(ms = 30000) {
+// Polls the snapshot until a fetch has finished (or the given condition holds), then returns it.
+async function waitForFetch(ms = 30000, until = (s) => s.fetchedAt || s.error) {
   const t0 = Date.now();
-  while (Date.now() - t0 < ms) { const s = await getSnapshot(); if (s.fetchedAt || s.error) return s; await sleep(300); }
+  while (Date.now() - t0 < ms) { const s = await getSnapshot(); if (until(s)) return s; await sleep(300); }
   return getSnapshot();
 }
 
@@ -90,7 +95,24 @@ const baseConfig = JSON.stringify(good);
 const fixtureConfig = JSON.stringify({ org: 'example', repos: ['alpha', 'beta', 'gamma'], pollSeconds: 60, includeArchived: false });
 
 try {
-  console.log('== Run 1: defaults, live GitHub ==');
+  console.log('== Repository consistency (no server) ==');
+  {
+    const site = readFileSync(path.join(ROOT, 'docs', 'index.html'), 'utf8');
+    const siteCsp = site.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/)?.[1] || '';
+    ok('the product page has no inline script, stylesheet, style attribute or event handler', !/<script\b(?![^>]*\bsrc=)|<style\b|\sstyle="|\son\w+=/i.test(site));
+    ok('the product page\'s policy is self-only, with its script and stylesheet in files (no hash to go stale)', /script-src 'self'/.test(siteCsp) && /style-src 'self'/.test(siteCsp) && !/unsafe-inline/.test(siteCsp) && existsSync(path.join(ROOT, 'docs', 'site.js')) && existsSync(path.join(ROOT, 'docs', 'site.css')), siteCsp);
+    ok('Dockerfile and .dockerignore ship with the repo', existsSync(path.join(ROOT, 'Dockerfile')) && existsSync(path.join(ROOT, '.dockerignore')));
+    ok('engines.node is a lower bound the server and the updater understand', /^>=\d+(\.\d+){0,2}$/.test(pkg.engines.node), pkg.engines.node);
+    const floor = Number(pkg.engines.node.match(/\d+/)[0]);
+    const dockerMajor = Number(readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8').match(/FROM node:(\d+)/)?.[1]);
+    const mentions = [readFileSync(path.join(ROOT, 'README.md'), 'utf8'), site].map((text) => [...text.matchAll(/Node(?:\.js)?(?:\]\([^)]*\))? (\d+) or newer/g)].map((m) => Number(m[1]))); // "Node.js 22 or newer", also as a Markdown link
+    ok('the Docker image and every "Node.js N or newer" in the README and the product page agree with the engines floor', dockerMajor >= floor && mentions.every((list) => list.length > 0 && list.every((n) => n === floor)), JSON.stringify({ floor, dockerMajor, mentions }));
+    if (process.env.TEST_NODE_FLOOR) ok('this CI leg runs the engines floor itself', Number(process.versions.node.split('.')[0]) === floor, process.versions.node);
+    if (process.env.CI) ok('a fresh checkout has start.cmd with CRLF line endings (cmd.exe can miss a goto label in an LF file)', /\r\n/.test(readFileSync(path.join(ROOT, 'start.cmd'), 'utf8')));
+  }
+
+  if (!LIVE) console.log('TEST_LIVE=0: the checks against live GitHub are skipped');
+  console.log('== Run 1: defaults (request handling, then live GitHub) ==');
   {
     const s = await startServer({}, baseConfig, { cache: false });
     const r1 = await rawRequest('GET //[::1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n');
@@ -100,7 +122,13 @@ try {
     ok('Host: [::1] accepted', (await rawStatus(`Host: [::1]:${PORT}`)) === 200);
     ok('HEAD / answers 200', (await rawStatus(`Host: 127.0.0.1:${PORT}`, 'HEAD', '/')) === 200);
     const page = await fetch(`${BASE}/`);
-    ok('security headers on the page', page.headers.get('x-content-type-options') === 'nosniff' && /frame-ancestors 'none'/.test(page.headers.get('content-security-policy') || '') && page.headers.get('referrer-policy') === 'no-referrer');
+    const csp = page.headers.get('content-security-policy') || '';
+    ok('security headers on the page', page.headers.get('x-content-type-options') === 'nosniff' && /frame-ancestors 'none'/.test(csp) && page.headers.get('referrer-policy') === 'no-referrer');
+    const html = await page.text();
+    const scripts = inlineHashes(html, 'script'), styles = inlineHashes(html, 'style');
+    ok('the policy allows the served page\'s inline script and stylesheet by hash', scripts.length === 1 && styles.length === 1 && csp.includes(scripts[0]) && csp.includes(styles[0]), csp.slice(0, 160));
+    ok('the policy has no unsafe-inline and locks down the rest', !/unsafe-inline/.test(csp) && /default-src 'none'/.test(csp) && /object-src 'none'/.test(csp) && /require-trusted-types-for 'script'/.test(csp), csp);
+    ok('the page has no inline style attributes (they would be refused by the policy)', !/\sstyle="/.test(html));
     ok('cross-site Origin on POST is 403', (await post('/api/config', good, { Origin: 'http://evil.example' })).status === 403);
     ok('Sec-Fetch-Site: cross-site on POST is 403', (await post('/api/refresh', '', { 'Sec-Fetch-Site': 'cross-site' })).status === 403);
     ok('same-origin Origin on POST is accepted', (await post('/api/config', good, { Origin: BASE })).status === 200);
@@ -120,6 +148,7 @@ try {
     ok('valid save returns full public config', saved.status === 200 && saved.json.pollSeconds === 300 && Array.isArray(saved.json.pollOptions) && saved.json.maxRepos === 3 && 'tokenSource' in saved.json, JSON.stringify(saved.json));
     ok('config after bad saves still has gitignore (nothing silently reset)', JSON.parse(readFileSync(s.cfg, 'utf8')).repos.includes('gitignore'));
 
+    if (LIVE) {
     const first = await waitForFetch();
     ok('first fetch succeeded', Boolean(first.fetchedAt) && !first.error, first.error || '');
     const row = first.repos?.[0] || {};
@@ -173,6 +202,7 @@ try {
     ok('org-repos is open when no ADMIN_TOKEN', (await fetch(`${BASE}/api/org-repos`)).status === 200);
     const preview = await (await fetch(`${BASE}/api/org-repos?owner=torvalds`)).json();
     ok('org-repos previews another owner without saving', Array.isArray(preview.repos) && preview.org === 'torvalds' && typeof preview.truncated === 'boolean', JSON.stringify(preview).slice(0, 120));
+    } // LIVE
     ok('org-repos rejects a bad owner name', (await fetch(`${BASE}/api/org-repos?owner=bad%20name`)).status === 400);
     await s.stop();
     ok('server log has no crash', !/TypeError|unhandled/.test(s.log()), s.log());
@@ -182,7 +212,8 @@ try {
   {
     const s = await startServer({ ADMIN_TOKEN: 'secret-admin', WEBHOOK_SECRET: 'hook' }, baseConfig);
     ok('org-repos without token is 401', (await fetch(`${BASE}/api/org-repos`)).status === 401);
-    ok('org-repos with token is 200', (await fetch(`${BASE}/api/org-repos`, { headers: { 'X-Admin-Token': 'secret-admin' } })).status === 200);
+    const withToken = (await fetch(`${BASE}/api/org-repos`, { headers: { 'X-Admin-Token': 'secret-admin' } })).status;
+    ok('org-repos with the admin token is authorized (and lists repositories when live)', LIVE ? withToken === 200 : withToken !== 401, String(withToken));
     ok('settings save without token is 401', (await post('/api/config', good)).status === 401);
     ok('settings save with token is 200', (await post('/api/config', good, { 'X-Admin-Token': 'secret-admin' })).status === 200);
     const payload = JSON.stringify({ repository: { name: 'gitignore' } });
@@ -247,10 +278,11 @@ try {
     ok('defaults have no owner and no repos', cfg.org === '' && cfg.repos.length === 0 && cfg.configProblem === null, JSON.stringify(cfg));
     ok('a config file is created with those defaults', existsSync(s.cfg) && JSON.parse(readFileSync(s.cfg, 'utf8')).org === '');
     ok('repository list asks for an owner first', (await fetch(`${BASE}/api/org-repos`)).status === 400);
-    ok('repository list can preview an owner before saving', (await fetch(`${BASE}/api/org-repos?owner=github`)).status === 200);
+    if (LIVE) ok('repository list can preview an owner before saving', (await fetch(`${BASE}/api/org-repos?owner=github`)).status === 200);
     ok('picking repos without an owner is rejected', (await post('/api/config', { org: '', repos: ['x'], pollSeconds: 60 })).status === 400);
     ok('saving only the poll interval without an owner is fine', (await post('/api/config', { org: '', repos: [], pollSeconds: 120 })).status === 200);
-    ok('a user account works as the owner', (await post('/api/config', { org: 'torvalds', repos: ['linux'], pollSeconds: 60 })).status === 200 && (await fetch(`${BASE}/api/org-repos`)).status === 200);
+    ok('a user account works as the owner', (await post('/api/config', { org: 'torvalds', repos: ['linux'], pollSeconds: 60 })).status === 200);
+    if (LIVE) ok('and its repository list loads', (await fetch(`${BASE}/api/org-repos`)).status === 200);
     const snap = await getSnapshot();
     ok('snapshot reports how many repos are configured', snap.configuredRepos === 1, String(snap.configuredRepos));
     await s.stop();
@@ -282,7 +314,7 @@ try {
     s = await startServer({ REPO_PULSE_FIXTURE: FIXTURE, MAX_REPOS: '5' }, fixtureConfig, { cache: false });
     const cfg = await (await fetch(`${BASE}/api/config`)).json();
     ok('MAX_REPOS raises the limit', cfg.maxRepos === 5 && (await post('/api/config', { org: 'example', repos: ['alpha', 'beta', 'gamma', 'other/delta'], pollSeconds: 60, issueLabels: ['bug'] })).status === 200, String(cfg.maxRepos));
-    const multi = await waitForFetch(5000);
+    const multi = await waitForFetch(5000, (snap) => snap.repos?.some((r) => r.name === 'delta')); // the settings refresh lands after the reply
     const delta = multi.repos?.find((r) => r.name === 'delta') || {};
     const alpha2 = multi.repos?.find((r) => r.name === 'alpha') || {};
     ok('a repository under another owner keeps its owner', delta.owner === 'other' && delta.fullName === 'other/delta' && delta.key === 'other/delta', JSON.stringify([delta.owner, delta.fullName, delta.key]));
@@ -294,8 +326,8 @@ try {
     await s.stop();
   }
 
-  console.log('== Run 8: owners, branches and labels against live GitHub ==');
-  {
+  if (LIVE) {
+    console.log('== Run 8: owners, branches and labels against live GitHub ==');
     const s = await startServer({}, JSON.stringify({ org: 'github', repos: ['gitignore', 'nodejs/undici@main', 'docs@no-such-branch'], pollSeconds: 60, issueLabels: ['bug'] }), { cache: false });
     const snap = await waitForFetch();
     const rows = Object.fromEntries((snap.repos || []).map((r) => [r.key, r]));
@@ -318,7 +350,6 @@ try {
     ok('owner/name works with no default owner at all', (await post('/api/config', { org: '', repos: ['github/gitignore'], pollSeconds: 60 })).status === 200);
     ok('labels with commas or more than five are rejected', (await post('/api/config', { org: 'github', repos: [], pollSeconds: 60, issueLabels: ['a,b'] })).status === 400 && (await post('/api/config', { org: 'github', repos: [], pollSeconds: 60, issueLabels: ['1', '2', '3', '4', '5', '6'] })).status === 400);
     await s.stop();
-    ok('Dockerfile and .dockerignore ship with the repo', existsSync(path.join(ROOT, 'Dockerfile')) && existsSync(path.join(ROOT, '.dockerignore')));
   }
 
   console.log('== Run 9: self-update from a release ==');
@@ -327,22 +358,27 @@ try {
     const FEED = PORT + 7;
     const install = path.join(TMP, 'install');
     mkdirSync(path.join(install, 'public'), { recursive: true });
-    for (const f of ['server.js', 'public/index.html', 'package.json']) copyFileSync(path.join(ROOT, f), path.join(install, f));
-    const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
-    const zip = buildZip([
+    const [serverSrc, pageSrc] = ['server.js', 'public/index.html'].map((f) => readFileSync(path.join(ROOT, f)));
+    for (const f of ['server.js', 'package.json']) copyFileSync(path.join(ROOT, f), path.join(install, f));
+    writeFileSync(path.join(install, 'public', 'index.html'), pageSrc.toString('utf8').replace(/\r?\n/g, '\r\n')); // as a CRLF checkout would have it
+    const releaseZip = (pkgExtra, extraEntries = []) => buildZip([
       ['repo-pulse/', null],
-      ['repo-pulse/server.js', readFileSync(path.join(ROOT, 'server.js')), true],
-      ['repo-pulse/public/index.html', Buffer.concat([readFileSync(path.join(ROOT, 'public', 'index.html')), Buffer.from('\n<!-- release 99.0.0 -->\n')]), true],
-      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0' }, null, 2)), false],
-      ['repo-pulse/start.cmd', Buffer.from('@echo off\r\necho a launcher the update must not touch\r\n'), false],
+      ['repo-pulse/server.js', serverSrc, true],
+      ['repo-pulse/public/index.html', Buffer.concat([pageSrc, Buffer.from('\n<!-- release 99.0.0 -->\n')]), true],
+      ['repo-pulse/package.json', Buffer.from(JSON.stringify({ ...pkg, version: '99.0.0', ...pkgExtra }, null, 2)), false],
+      ...extraEntries,
     ]);
-    const sums = `${createHash('sha256').update(zip).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
+    const sumsFor = (z) => `${createHash('sha256').update(z).digest('hex')}  repo-pulse-v99.0.0.zip\n`;
+    const zip = releaseZip({}, [['repo-pulse/start.cmd', Buffer.from('@echo off\r\necho a launcher the update must not touch\r\n'), false]]), sums = sumsFor(zip);
+    const tallZip = releaseZip({ engines: { node: '>=99.1' } }), tallSums = sumsFor(tallZip); // a release this Node cannot run
     const release = { tag_name: 'v99.0.0', html_url: 'http://example.invalid/releases/v99.0.0', published_at: '2026-10-13T00:00:00Z', body: 'Test release', assets: [{ name: 'repo-pulse-v99.0.0.zip', browser_download_url: `http://127.0.0.1:${FEED}/zip` }, { name: 'SHA256SUMS', browser_download_url: `http://127.0.0.1:${FEED}/sums` }] };
     const feed = http.createServer((req, res) => {
       if (req.url === '/latest') return res.end(JSON.stringify(release));
       if (req.url === '/zip') return res.end(zip);
       if (req.url === '/sums') return res.end(sums);
       if (req.url === '/badsums') return res.end(`${'0'.repeat(64)}  repo-pulse-v99.0.0.zip\n`);
+      if (req.url === '/tallzip') return res.end(tallZip);
+      if (req.url === '/tallsums') return res.end(tallSums);
       res.statusCode = 404; res.end();
     });
     await new Promise((r) => feed.listen(FEED, '127.0.0.1', r));
@@ -352,6 +388,8 @@ try {
       let u = {};
       for (let i = 0; i < 50 && !u.checkedAt; i++) { u = await (await fetch(`${BASE}/api/update`)).json(); if (!u.checkedAt) await sleep(200); }
       ok('startup check finds the newer release', u.available === true && u.latest === '99.0.0' && u.current === pkg.version && u.canAdminister === true, JSON.stringify(u));
+      const crlfPage = await fetch(`${BASE}/`), crlfHtml = await crlfPage.text();
+      ok('a CRLF checkout is served as LF text, so the policy hashes match what the browser computes', !crlfHtml.includes('\r') && (crlfPage.headers.get('content-security-policy') || '').includes(inlineHashes(crlfHtml, 'script')[0]), (crlfPage.headers.get('content-security-policy') || '').slice(0, 120));
       const snap = await getSnapshot();
       ok('the snapshot carries the version and the update state', snap.version === pkg.version && snap.update?.available === true, JSON.stringify([snap.version, snap.update]));
       // a corrupt checksum file must stop the install before anything is written
@@ -359,8 +397,18 @@ try {
       await post('/api/update/check', '');
       const bad = await post('/api/update', '');
       ok('a checksum mismatch refuses the update and leaves the files alone', bad.status === 502 && /SHA256SUMS/.test(bad.json?.error || '') && JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === pkg.version, JSON.stringify(bad.json));
+      const afterBad = await (await fetch(`${BASE}/api/update`)).json();
+      ok('the failure is a full sentence in the reply and an install error apart from the check state', /^Update failed: /.test(bad.json?.error || '') && /SHA256SUMS/.test(afterBad.installError || '') && afterBad.error === null && afterBad.available === true, JSON.stringify(afterBad));
+      // a release whose Node floor this process does not meet must be refused before anything is written
+      release.assets[0].browser_download_url = `http://127.0.0.1:${FEED}/tallzip`;
+      release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/tallsums`;
+      await post('/api/update/check', '');
+      const tall = await post('/api/update', '');
+      ok('a release that needs a newer Node.js is refused and the files are left alone', tall.status === 502 && /Node\.js >=99\.1/.test(tall.json?.error || '') && JSON.parse(readFileSync(path.join(install, 'package.json'), 'utf8')).version === pkg.version, JSON.stringify(tall.json));
+      release.assets[0].browser_download_url = `http://127.0.0.1:${FEED}/zip`;
       release.assets[1].browser_download_url = `http://127.0.0.1:${FEED}/sums`;
       await post('/api/update/check', '');
+      ok('a later successful check retires the install error', (await (await fetch(`${BASE}/api/update`)).json()).installError === null);
       const inst = await post('/api/update', '');
       ok('installing answers ok and announces a restart', inst.status === 200 && inst.json?.ok === true && inst.json.version === '99.0.0' && inst.json.restarting === true, JSON.stringify(inst.json));
       const code = await new Promise((r) => { if (s.child.exitCode !== null) return r(s.child.exitCode); s.child.on('exit', (c) => r(c)); setTimeout(() => r('timeout'), 10000); });
@@ -392,8 +440,8 @@ try {
     }
   }
 
-  console.log('== Run 10: rejected token ==');
-  {
+  if (LIVE) {
+    console.log('== Run 10: rejected token ==');
     const s = await startServer({ GITHUB_TOKEN: 'ghp_definitely_invalid_token' }, baseConfig, { cache: false });
     const snap = await waitForFetch(15000);
     ok('a 401 stops polling and explains what to do', typeof snap.tokenProblem === 'string' && /rejected the token/.test(snap.tokenProblem) && snap.nextPollAt === null, JSON.stringify([snap.tokenProblem, snap.nextPollAt]));

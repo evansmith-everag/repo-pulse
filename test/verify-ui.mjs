@@ -25,7 +25,13 @@ const BROWSERS = [
   '/usr/bin/microsoft-edge', '/usr/bin/google-chrome', '/usr/bin/chromium',
 ].filter((p) => p && existsSync(p));
 let pass = 0, fail = 0;
-const ok = (name, cond, detail = '') => { if (cond) { pass++; console.log(`  PASS ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}`); } };
+// Uncaught exceptions, policy violations and Trusted Types refusals only show in the page's console; the harness collects
+// them and the next check fails with them, so an error lands on the step that caused it.
+const pageErrors = [];
+const ok = (name, cond, detail = '') => {
+  const errs = pageErrors.splice(0);
+  if (cond && !errs.length) { pass++; console.log(`  PASS ${name}`); } else { fail++; console.log(`  FAIL ${name} ${detail}${errs.length ? ` | page errors: ${errs.join(' | ')}` : ''}`); }
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (!BROWSERS.length) { console.log('No Edge or Chrome found. Set REPO_PULSE_BROWSER to the browser executable.'); process.exit(2); }
@@ -40,12 +46,12 @@ const liveCfg = path.join(TMP, 'config.json');
 const fixCfg = path.join(TMP, 'fixture-config.json');
 writeFileSync(liveCfg, JSON.stringify(LIVE));
 writeFileSync(fixCfg, JSON.stringify(FIXTURE_CFG));
-const serverEnv = { ...process.env, HOST: '127.0.0.1', ADMIN_TOKEN: '', WEBHOOK_SECRET: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '' };
+const serverEnv = { ...process.env, HOST: '127.0.0.1', ADMIN_TOKEN: '', WEBHOOK_SECRET: '', ALLOWED_HOSTS: '', TRUST_PROXY: '', MAX_REPOS: '', UPDATE_CHECK: '0' }; // no real release checks: the tests inject update states
 const server = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(PORT), REPO_PULSE_CONFIG: liveCfg, REPO_PULSE_CACHE: path.join(TMP, 'live-cache.json'), REPO_PULSE_FIXTURE: '' }, stdio: 'ignore' });
 const fixServer = spawn(process.execPath, ['server.js'], { cwd: ROOT, env: { ...serverEnv, PORT: String(FIX_PORT), REPO_PULSE_CONFIG: fixCfg, REPO_PULSE_CACHE: path.join(TMP, 'fix-cache.json'), REPO_PULSE_FIXTURE: path.join(ROOT, 'test', 'fixture.json'), MAX_REPOS: '4' }, stdio: 'ignore' });
 // --disable-dev-shm-usage keeps Chromium alive in containers with a tiny /dev/shm; --remote-allow-origins lets a
 // non-browser client open the DevTools socket. The browser's own output is kept so a failure to start explains itself.
-const browser = spawn(browserPath, [headlessFlag, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-allow-origins=*', `--remote-debugging-port=${DBG}`, `--user-data-dir=${path.join(TMP, 'profile')}`, '--window-size=1280,1000', 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
+const browser = spawn(browserPath, [headlessFlag, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-allow-origins=*', `--remote-debugging-port=${DBG}`, `--user-data-dir=${path.join(TMP, 'profile')}`, 'about:blank'], { stdio: ['ignore', 'pipe', 'pipe'] });
 let browserLog = '';
 browser.stdout.on('data', (d) => (browserLog += d));
 browser.stderr.on('data', (d) => (browserLog += d));
@@ -73,7 +79,12 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((r) => (ws.onopen = r));
   let seq = 0; const waiting = new Map();
-  ws.onmessage = (m) => { const msg = JSON.parse(m.data); if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); } };
+  ws.onmessage = (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg.id && waiting.has(msg.id)) { waiting.get(msg.id)(msg); waiting.delete(msg.id); }
+    else if (msg.method === 'Runtime.exceptionThrown') pageErrors.push(msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text);
+    else if (msg.method === 'Log.entryAdded' && msg.params.entry.level === 'error' && msg.params.entry.source !== 'network') pageErrors.push(`${msg.params.entry.source}: ${msg.params.entry.text}`);
+  };
   const send = (method, params = {}) => new Promise((resolve) => { const id = ++seq; waiting.set(id, resolve); ws.send(JSON.stringify({ id, method, params })); });
   // Snippets run in the page's global scope, so use `var` (or expressions) rather than top-level `const`/`let`.
   const evalJs = async (expression) => {
@@ -85,9 +96,17 @@ try {
   const text = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.textContent.trim() ?? null`);
   const hidden = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.hidden ?? null`);
   const chips = () => evalJs(`document.querySelectorAll('#selected button').length`);
+  // Live updates arrive through handleSnapshot, which resolves once the new DOM is in place (evalJs awaits promises).
+  const snapshot = (expr) => evalJs(`handleSnapshot(${expr})`);
+  const setTheme = (v) => evalJs(`var t = document.getElementById('pref-theme'); t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event('change'));`);
   const nav = async (url) => { await send('Page.navigate', { url }); await sleep(400); };
+  const viewport = async (width) => { await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false }); await until(`innerWidth === ${width}`, 3000); };
 
   await send('Page.enable');
+  await send('Runtime.enable');
+  await send('Log.enable');
+  // The window-size flag is not always honoured by a headless browser; pin the viewport so layout checks are deterministic.
+  await viewport(1280);
 
   console.log('== Fixture dashboard ==');
   await nav(`${FIX}/`);
@@ -98,7 +117,7 @@ try {
   ok('label counts appear in the counts line', /7 bug/.test(await evalJs(`document.querySelectorAll('.card.ci-failing .meta')[1].textContent`)));
   ok('CI failures this week show on the card with the failing workflow', /checks 7d: 16 passed · 4 failed.*failing now: Nightly/.test(await text('.card.ci-failing .meta.ci')) && (await evalJs(`document.querySelector('.card.ci-failing .meta.ci a')?.href`)) === 'https://github.com/example/alpha/actions/runs/1', await text('.card.ci-failing .meta.ci'));
   ok('open security alerts show on the card', /2 open security alerts/.test(await text('.card.ci-failing')));
-  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.querySelectorAll('#velocity-total td').length`)) === 11);
+  ok('the velocity table lists every readable repository plus a total row', !(await hidden('#velocity')) && (await evalJs(`document.querySelectorAll('#velocity-body tr').length`)) === 3 && (await evalJs(`document.getElementById('velocity-total').cells.length`)) === 11 && (await evalJs(`document.querySelector('#velocity-body th').scope`)) === 'row');
   const alphaRow = await evalJs(`[...document.querySelectorAll('#velocity-body tr')[0].cells].map(c => c.textContent)`);
   ok('velocity cells carry deltas, medians, people, issues, stale PRs, CI and alerts', alphaRow[1] === '5↑2' && alphaRow[3] === '20h' && alphaRow[4] === '4h' && alphaRow[5] === '18↑6' && alphaRow[6] === '3 · top 50%' && alphaRow[7] === '+9 / −4 (+5)' && alphaRow[8] === '2' && alphaRow[9] === '4 / 20 · Nightly' && alphaRow[10] === '2', JSON.stringify(alphaRow));
   ok('a repository without Actions shows a dash for CI', (await evalJs(`document.querySelectorAll('#velocity-body tr')[1].cells[9].textContent`)) === '—');
@@ -106,15 +125,29 @@ try {
   ok('"v" hides the velocity table and remembers it', await hidden('#velocity') && /"velocity":false/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }))`);
   ok('"v" shows it again', !(await hidden('#velocity')));
+  // the stat tiles only fold inside a card narrower than the repo grid ever makes one
+  const tileColumns = () => evalJs(`getComputedStyle(document.querySelector('.stats')).gridTemplateColumns`);
+  await viewport(1060);
+  let cols = await tileColumns();
+  ok('three cards across at 1060px keep three stat tiles per row', cols.split(' ').length === 3, cols);
+  await viewport(300);
+  cols = await tileColumns();
+  ok('a 300px phone folds the tiles to two per row', cols.split(' ').length === 2, cols);
+  await viewport(1280);
 
   // an available release shows an update bar; the Settings panel mirrors it
-  await evalJs(`handleSnapshot({ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } });`);
+  await snapshot(`{ ...snap, version: '1.1.0', update: { enabled: true, repo: 'example/repo-pulse', current: '1.1.0', latest: '99.0.0', available: true, url: 'https://example.invalid/releases/v99.0.0', publishedAt: null, checkedAt: new Date().toISOString(), error: null, installing: false, installed: null, container: false } }`);
   ok('an available release shows an update bar with notes and an Update button', !(await hidden('#update-bar')) && /v99\.0\.0 is available \(running v1\.1\.0\)/.test(await text('#update-bar')) && (await evalJs(`document.querySelector('#update-bar button')?.textContent`)) === 'Update now', await text('#update-bar'));
   await evalJs(`document.getElementById('tab-settings').click()`);
   ok('the Updates panel reports the version and the available release', await until(`/Repo Pulse v1\\.1\\.0\\. Checked .*v99\\.0\\.0 is available/.test(document.getElementById('update-status').textContent) && !document.getElementById('update-install').hidden`), await text('#update-status'));
   await evalJs(`document.getElementById('tab-dashboard').click()`);
-  await evalJs(`handleSnapshot({ ...snap, update: { ...snap.update, available: false } });`);
+  await snapshot(`{ ...snap, update: { ...snap.update, installError: 'the downloaded zip does not match SHA256SUMS.' } }`);
+  ok('a failed install is reported in the bar from the snapshot, with the offer still there', /^Update failed: the downloaded zip does not match SHA256SUMS\. Repo Pulse v99\.0\.0 is available/.test(await text('#update-bar')) && (await evalJs(`document.querySelector('#update-bar button')?.textContent`)) === 'Update now' && /\(the last install failed: the downloaded zip does not match SHA256SUMS\)/.test(await text('#update-status')), `${await text('#update-bar')} | ${await text('#update-status')}`);
+  await snapshot(`{ ...snap, update: { ...snap.update, available: false } }`);
   ok('the bar disappears when nothing is available', await hidden('#update-bar'));
+  await evalJs(`window.__fetch = window.fetch; window.fetch = () => Promise.reject(new Error('offline')); document.getElementById('update-check').click();`);
+  ok('"Check now" reports in its own status line and leaves the version summary alone', await until(`/Could not check: offline/.test(document.getElementById('update-result').textContent)`, 3000) && /^Repo Pulse v/.test(await text('#update-status')), `${await text('#update-result')} | ${await text('#update-status')}`);
+  await evalJs(`window.fetch = window.__fetch;`);
   ok('failing checks mark the card and chip', await evalJs(`document.querySelector('.card.ci-failing .chip.bad')?.textContent`) === 'main ● failing');
   // The fixture's dates are fixed, so the age keeps growing: accept any compact duration rather than today's value.
   ok('needs-review tile shows the count and the oldest age', /^2/.test(await text('.card.ci-failing .stat b')) && /^oldest \d+(m|h|d|mo|y)$/.test(await text('.card.ci-failing .stat .sub')), await text('.card.ci-failing .stat .sub'));
@@ -130,10 +163,20 @@ try {
   ok('each card is a heading for screen readers', (await evalJs(`document.querySelectorAll('.card h2').length`)) === 4);
 
   // auto-reload: a snapshot with a different build id reloads the page (stubbed here) unless Settings has edits
-  await evalJs(`window.__reloaded = 0; reloadPage = () => { window.__reloaded++; }; sessionStorage.removeItem('repo-pulse:reloaded-for'); handleSnapshot({ ...snap, build: 'test.newer' });`);
+  await evalJs(`window.__reloaded = 0; reloadPage = () => { window.__reloaded++; }; sessionStorage.removeItem('repo-pulse:reloaded-for');`);
+  await snapshot(`{ ...snap, build: 'test.newer' }`);
   ok('a newer build id from the server reloads the page', (await evalJs(`window.__reloaded`)) === 1);
-  ok('the same newer build is not reloaded for twice (no loop)', (await evalJs(`handleSnapshot({ ...snap, build: 'test.newer' }); window.__reloaded`)) === 1 && !(await hidden('#update-note')));
+  await snapshot(`{ ...snap, build: 'test.newer' }`);
+  ok('the same newer build is not reloaded for twice (no loop)', (await evalJs(`window.__reloaded`)) === 1 && !(await hidden('#update-note')));
   await evalJs(`sessionStorage.removeItem('repo-pulse:reloaded-for'); document.getElementById('update-note').hidden = true; newerBuild = null;`);
+
+  // the velocity table folds into cards when its box is narrower than its eleven columns
+  await evalJs(`document.querySelector('#velocity .tablebox').style.width = '400px'`);
+  ok('a narrow velocity table stacks each row into a labelled card', await until(`getComputedStyle(document.querySelector('#velocity-body td')).display === 'block' && getComputedStyle(document.querySelector('#velocity thead')).display === 'none'`, 3000));
+  await evalJs(`document.querySelector('#velocity .tablebox').style.removeProperty('width')`);
+  ok('the velocity table returns to columns when wide again', await until(`getComputedStyle(document.querySelector('#velocity-body td')).display === 'table-cell'`, 3000), await evalJs(`JSON.stringify({ td: getComputedStyle(document.querySelector('#velocity-body td')).display, box: document.querySelector('#velocity .tablebox').clientWidth, viewport: innerWidth })`));
+  ok('the column definitions are built from the headings and available without hovering', (await evalJs(`document.querySelectorAll('#velocity .defs dt').length`)) === 10 && (await evalJs(`document.querySelector('#velocity .defs dd').textContent`)) === (await evalJs(`document.querySelector('#velocity thead th[title]').title`)));
+  ok('stacked cells carry their column heading as a label', (await evalJs(`document.querySelector('#velocity-body td').dataset.label`)) === 'Merged');
   ok('the page has a main landmark and a live announcer', (await evalJs(`Boolean(document.querySelector('main') && document.getElementById('announce').getAttribute('aria-live'))`)));
 
   // stale state: age the stamp and run the ticker
@@ -149,8 +192,11 @@ try {
   // keyboard shortcut and theme preference
   await evalJs(`document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 's' }))`);
   ok('"s" opens Settings', !(await hidden('#view-settings')));
-  await evalJs(`var t = document.getElementById('pref-theme'); t.value = 'dark'; t.dispatchEvent(new Event('change'));`);
+  await setTheme('light');
+  ok('switching to light flips the tokens through color-scheme', (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(245, 246, 243)');
+  await setTheme('dark');
   ok('theme preference applies and persists', (await evalJs(`document.documentElement.dataset.theme`)) === 'dark' && /"theme":"dark"/.test(await evalJs(`localStorage.getItem('repo-pulse:prefs')`)));
+  ok('the override drives color-scheme, so native controls and light-dark() tokens follow it', (await evalJs(`getComputedStyle(document.documentElement).colorScheme`)) === 'dark' && (await evalJs(`getComputedStyle(document.body).backgroundColor`)) === 'rgb(20, 24, 21)');
   await evalJs(`var b = document.getElementById('pref-bots'); b.checked = false; b.dispatchEvent(new Event('change'));`);
   await evalJs(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }))`);
   ok('turning off the bot filter shows bot commits', await until(`/dependabot/.test(document.getElementById('feed-body').textContent)`, 3000));
@@ -238,10 +284,13 @@ try {
   await evalJs(`location.hash = '#dashboard'`);
   ok('hash change switches the view', await until(`!document.getElementById('view-dashboard').hidden`, 2000));
   ok('inactive tab is out of the Tab order', (await evalJs(`document.getElementById('tab-settings').tabIndex`)) === -1);
-  ok('focus survives a redraw', await evalJs(`(() => { var a = document.querySelector('.card .repo-link'); a.focus(); draw(); return document.activeElement === document.querySelector('.card .repo-link'); })()`));
+  ok('focus survives a redraw', await evalJs(`(async () => { var a = document.querySelector('.card .repo-link'); a.focus(); await redraw(); return document.activeElement === document.querySelector('.card .repo-link'); })()`));
+  await sleep(300); // let any late console entries arrive
+  ok('the page raised no uncaught errors, policy violations or Trusted Types refusals after the last step', true);
 } catch (err) {
   console.log('ERROR ' + err.message); fail++;
 } finally {
+  if (pageErrors.length) console.log(`  page errors after the last check: ${pageErrors.join(' | ')}`);
   ws?.close();
   // The launcher process we spawned is not the browser that ends up running (Edge re-executes itself), so killing it
   // leaves the real browser behind holding the profile. Ask the browser to close itself over DevTools instead.

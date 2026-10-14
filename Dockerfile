@@ -6,7 +6,7 @@
 #   docker run -d --name repo-pulse --restart unless-stopped -e GITHUB_TOKEN=... -p 127.0.0.1:4317:4317 -v repo-pulse-data:/data repo-pulse
 #
 # REPO_PULSE_CONTAINER tells the server not to update itself in place (the image is the unit of update: pull a newer one).
-FROM node:22-alpine
+FROM node:26-alpine
 WORKDIR /app
 COPY package.json server.js ./
 COPY public ./public

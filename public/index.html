@@ -3,31 +3,42 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="text-scale" content="scale">
 <meta name="build" content="__BUILD__">
 <title>Repo Pulse</title>
 <style>
   /* Layout: a status strip, repo cards side by side (stacking when narrow), then one merged commit feed.
      System fonts only: the page makes no network request except to its own server. */
   :root {
-    --bg: #f5f6f3; --panel: #ffffff; --line: #dfe2da; --line-strong: #848d86; --fg: #1d2420; --muted: #66706a;
-    --accent: #2f6b4f; --ok: #2f7d4f; --warn: #8f5313; --bad: #b8433a;
+    --bg-l: #f5f6f3; --panel-l: #ffffff; --line-l: #dfe2da; --line-strong-l: #848d86; --fg-l: #1d2420; --muted-l: #66706a;
+    --accent-l: #2f6b4f; --ok-l: #2f7d4f; --warn-l: #8f5313; --bad-l: #b8433a;
+    --bg-d: #141815; --panel-d: #1c211e; --line-d: #2f3631; --line-strong-d: #6b766f; --fg-d: #e6ebe7; --muted-d: #98a39c;
+    --accent-d: #7cc39c; --ok-d: #6fcf97; --warn-d: #e3a35a; --bad-d: #ef8579;
+    /* Every token follows color-scheme, so the theme override below is one line and native controls follow too. */
+    --bg: light-dark(var(--bg-l), var(--bg-d)); --panel: light-dark(var(--panel-l), var(--panel-d)); --line: light-dark(var(--line-l), var(--line-d));
+    --line-strong: light-dark(var(--line-strong-l), var(--line-strong-d)); --fg: light-dark(var(--fg-l), var(--fg-d)); --muted: light-dark(var(--muted-l), var(--muted-d));
+    --accent: light-dark(var(--accent-l), var(--accent-d)); --ok: light-dark(var(--ok-l), var(--ok-d)); --warn: light-dark(var(--warn-l), var(--warn-d)); --bad: light-dark(var(--bad-l), var(--bad-d));
     --font-display: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
     --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
-    --radius: 8px; color-scheme: light;
+    --radius: 8px;
+    color-scheme: light dark;
+    accent-color: var(--accent);
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
-      --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
-    }
-  }
-  :root[data-theme="dark"] {
-    --bg: #141815; --panel: #1c211e; --line: #2f3631; --line-strong: #6b766f; --fg: #e6ebe7; --muted: #98a39c;
-    --accent: #7cc39c; --ok: #6fcf97; --warn: #e3a35a; --bad: #ef8579; color-scheme: dark;
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  /* Browsers without light-dark() (before mid-2024) map the tokens from the system preference or the manual override themselves. */
+  @supports not (color: light-dark(white, black)) {
+    :root { --bg: var(--bg-l); --panel: var(--panel-l); --line: var(--line-l); --line-strong: var(--line-strong-l); --fg: var(--fg-l); --muted: var(--muted-l); --accent: var(--accent-l); --ok: var(--ok-l); --warn: var(--warn-l); --bad: var(--bad-l); }
+    :root[data-theme="dark"] { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); }
+    @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: var(--bg-d); --panel: var(--panel-d); --line: var(--line-d); --line-strong: var(--line-strong-d); --fg: var(--fg-d); --muted: var(--muted-d); --accent: var(--accent-d); --ok: var(--ok-d); --warn: var(--warn-d); --bad: var(--bad-d); } }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font-body); }
+  /* 0.9375rem is the design's 15px at the default root size, but it follows the user's font-size and OS text scale. */
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 0.9375rem/1.5 var(--font-body); }
+  #view-dashboard { display: flex; flex-direction: column; gap: 24px; }
+  #reload-org { align-self: flex-start; }
   .wrap { max-width: 78rem; margin-inline: auto; padding: 24px 16px 48px; display: flex; flex-direction: column; gap: 24px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   kbd { font: .8em var(--font-mono); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 5px; }
@@ -47,7 +58,7 @@
   .dot.down { background: var(--bad); }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
   #updated.stale { color: var(--warn); }
-  #budget.low, #update-note { color: var(--warn); }
+  #budget.low, #update-note, #update-result { color: var(--warn); }
   .linkbtn { font: inherit; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; text-decoration: underline; min-height: 24px; }
   .linkbtn:disabled { opacity: .5; cursor: default; text-decoration: none; }
   .linkbtn[aria-pressed="true"] { color: var(--warn); }
@@ -68,7 +79,8 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chip { font-size: .75rem; padding: 1px 9px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; cursor: default; line-height: 1.5; }
   .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.muted { color: var(--muted); } .chip.bad { color: var(--bad); font-weight: 600; }
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  /* Three tiles across; a card too narrow for them (large text scale, tiny phone) folds to two, then one. */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 5.5rem), 1fr)); gap: 8px; }
   .stat b { display: block; font: 400 2.1rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
   .stat .label { display: block; font-size: .78rem; color: var(--muted); letter-spacing: .01em; }
   .stat .sub { display: block; font-size: .72rem; color: var(--muted); font-family: var(--font-mono); }
@@ -97,11 +109,15 @@
   .steps .ok { color: var(--ok); } .steps .todo { color: var(--fg); }
 
   .feed { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  /* The commit feed sits below the fold on a desk screen, so its rows are laid out only when scrolled near. */
+  #feed { content-visibility: auto; contain-intrinsic-size: auto none auto 40rem; }
   .feed h2, .settings h2 { margin: 0; font: 600 1rem var(--font-body); }
-  .tablebox { overflow-x: auto; }
+  .help, .note, .empty { text-wrap: pretty; }
+  .tablebox { overflow-x: auto; container-type: inline-size; }
   table { width: 100%; border-collapse: collapse; font-size: .88rem; }
-  th { text-align: left; font-weight: 500; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-  td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { text-align: left; font-weight: 500; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td, tbody th, tfoot th { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+  tbody th { font-weight: 500; }
   td.msg { min-width: 16rem; }
   td.repo, td.who { white-space: nowrap; color: var(--muted); font-size: .8rem; }
   .repo-inline { display: none; font-size: .78rem; color: var(--muted); }
@@ -114,9 +130,26 @@
   .velocity .d { font-size: .78rem; color: var(--muted); margin-left: 4px; }
   .velocity .d.up { color: var(--ok); } .velocity .d.down { color: var(--warn); }
   .velocity .warnc { color: var(--warn); font-weight: 500; } .velocity .bad { color: var(--bad); font-weight: 600; }
-  .velocity tfoot td { font-weight: 600; border-bottom: 0; }
-  .velocity th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+  .velocity tfoot td, .velocity tfoot th { font-weight: 600; border-bottom: 0; }
+  .velocity td.ci { white-space: normal; } /* workflow names run long; the CI cell wraps rather than widening the table */
+  .velocity thead th[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
+  /* Narrower than eleven columns need, each row becomes a card; the heading text travels with each cell as data-label. */
+  @container (width < 56rem) {
+    .velocity table, .velocity tbody, .velocity tfoot, .velocity tr, .velocity th, .velocity td { display: block; }
+    .velocity thead { display: none; }
+    .velocity tr { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; }
+    .velocity td.num, .velocity tbody th, .velocity tfoot th { border: 0; padding: 2px 0; text-align: left; white-space: normal; }
+    .velocity tbody th, .velocity tfoot th { font-weight: 600; padding-bottom: 6px; }
+    /* The second form names the label for assistive tech (the heading row is hidden here); the first is for browsers without alt text. */
+    .velocity td.num::before { content: attr(data-label) ": "; content: attr(data-label) ": " / attr(data-label) ": "; color: var(--muted); font-size: .8rem; margin-right: 6px; }
+  }
+  .defs { font-size: .82rem; color: var(--muted); }
+  .defs summary { cursor: pointer; }
+  .defs dl { margin: 8px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; }
+  .defs dt { font-weight: 500; color: var(--fg); } .defs dd { margin: 0; }
+  @media (max-width: 40rem) { .defs dl { grid-template-columns: 1fr; } }
   .meta.ci.failing { color: var(--bad); }
+  ::view-transition { pointer-events: none; } /* the page stays clickable while a cross-fade runs */
   @media (max-width: 40rem) {
     td.who, th.who, td.repo, th.repo, td.when, th.when { display: none; }
     td.msg { min-width: 0; }
@@ -142,6 +175,7 @@
   .picklist label { flex-direction: row; align-items: flex-start; gap: 10px; padding: 8px 12px; font-weight: 400; cursor: pointer; }
   .picklist label:hover { background: var(--bg); }
   .picklist input:disabled + div { color: var(--muted); }
+  .picklist .help { padding: 12px; }
   .picklist .name { font-family: var(--font-mono); font-size: .85rem; }
   .picklist .desc { font-size: .78rem; color: var(--muted); }
   .selected { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
@@ -158,7 +192,7 @@
   [hidden] { display: none !important; }
 
   /* TV mode: fills a wall display, bigger type, no chrome, no feed, commits inside the cards. */
-  body.tv { font-size: 22px; cursor: none; }
+  body.tv { font-size: 1.375rem; cursor: none; }
   body.tv .wrap { max-width: none; padding: 32px 40px; gap: 28px; }
   body.tv nav, body.tv #refresh-now, body.tv #pause, body.tv .feed, body.tv #mode, body.tv #budget, body.tv .abs, body.tv .waiting .who { display: none; }
   body.tv h1 { font-size: 2.6rem; }
@@ -192,7 +226,7 @@
   </header>
 
   <main>
-  <section id="view-dashboard" role="tabpanel" aria-labelledby="tab-dashboard" style="display:flex;flex-direction:column;gap:24px">
+  <section id="view-dashboard" role="tabpanel" aria-labelledby="tab-dashboard">
     <div class="status">
       <span aria-live="polite"><span class="dot" id="conn-dot"></span><span id="conn-text">Connecting…</span></span>
       <span id="updated" hidden>Updated <span id="updated-ago" class="ago" data-fine="1"></span><span class="abs"> (<time id="updated-time"></time>)</span></span>
@@ -208,7 +242,7 @@
     <div class="repos" id="repos"><div class="empty">Loading…</div></div>
     <section class="feed velocity" id="velocity" aria-labelledby="velocity-title" hidden>
       <h2 id="velocity-title">Velocity · last 7 days</h2>
-      <p class="help">Arrows compare with the 7 days before. Cycle time and first review are medians over this week's merged pull requests, bots excluded. CI counts GitHub Actions runs on the watched branch. Hover a column heading for its definition.</p>
+      <p class="help">Arrows compare with the 7 days before; bots are left out of the medians and the people column. Each column is explained under "Column definitions" below.</p>
       <div class="tablebox">
         <table>
           <thead><tr>
@@ -228,6 +262,10 @@
           <tfoot><tr id="velocity-total"></tr></tfoot>
         </table>
       </div>
+      <details class="defs">
+        <summary>Column definitions</summary>
+        <dl id="velocity-defs"></dl>
+      </details>
     </section>
     <section class="feed" id="feed" aria-labelledby="feed-title" hidden>
       <h2 id="feed-title">Recent commits</h2>
@@ -262,8 +300,8 @@
           <p class="help warn" id="add-note" role="status" hidden></p>
           <label for="repo-search">Filter the list</label>
           <input type="search" id="repo-search" placeholder="Filter repositories">
-          <ul class="picklist" id="picklist" role="group" aria-labelledby="repos-title" aria-describedby="limit-note"><li class="help" style="padding:12px">Loading repositories…</li></ul>
-          <button class="linkbtn" id="reload-org" type="button" style="align-self:flex-start">Reload repository list from GitHub</button>
+          <ul class="picklist" id="picklist" role="group" aria-labelledby="repos-title" aria-describedby="limit-note"><li class="help">Loading repositories…</li></ul>
+          <button class="linkbtn" id="reload-org" type="button">Reload repository list from GitHub</button>
         </div>
       </div>
       <div class="column">
@@ -288,7 +326,7 @@
             <button class="secondary" id="update-check" type="button">Check now</button>
             <button class="primary" id="update-install" type="button" hidden>Update now</button>
           </div>
-          <p class="help" id="update-note" role="status"></p>
+          <p class="help" id="update-result" role="status"></p>
           <p class="help">Checks the project's GitHub releases at startup and about once a month. Updating replaces the server and page files, keeps the old ones in <code>.previous</code>, and restarts.</p>
         </div>
         <div class="panel">
@@ -433,9 +471,33 @@
   $('reload-now').onclick = () => { try { sessionStorage.removeItem('repo-pulse:reloaded-for'); } catch {} reloadPage(); };
 
   // ----- live connection -----
+  // A live update that changed what is on screen cross-fades through a view transition when the dashboard is showing,
+  // the browser has the API and motion is not reduced; otherwise the DOM just swaps. A poll that found nothing new (the
+  // usual case), a reconnect replay and a TV wall (capturing a 4K page every minute is not worth a fade) never pay for one.
+  // While a fade's draw is still pending, further snapshots only replace `snap`: draw() marks what is new since the last
+  // pass, so it must run once per batch, and it reads the newest snapshot when it runs. Resolves once the new DOM is in place.
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  let lastDrawKey = '', pendingDraw = null;
+  function redraw() {
+    const { fetchedAt, failedAt, failures, rateLimit, nextPollAt, reason, ...shown } = snap; // everything but the per-poll churn, so a forgotten churn field fades every poll and gets noticed
+    const key = JSON.stringify(shown);
+    const changed = key !== lastDrawKey;
+    lastDrawKey = key;
+    if (pendingDraw) return pendingDraw;
+    const plain = firstDraw || !changed || tv || prefs.motion || reducedMotion.matches || document.hidden || currentTab() !== 'dashboard' || !document.startViewTransition;
+    if (plain) { draw(); return Promise.resolve(); }
+    const transition = document.startViewTransition(() => { pendingDraw = null; draw(); });
+    transition.ready.catch(() => {}); // a newer snapshot can skip this fade before it starts; the DOM is updated either way
+    transition.finished.catch(() => {}); // a draw() error is already reported through updateCallbackDone
+    pendingDraw = transition.updateCallbackDone;
+    return pendingDraw;
+  }
   function handleSnapshot(next) {
-    if (paused && snap?.fetchedAt) { pendingSnap = next; drawPause(); checkBuildFrom(next); return; }
-    snap = next; draw(); checkBuild();
+    if (paused && snap?.fetchedAt) { pendingSnap = next; drawPause(); checkBuildFrom(next); return Promise.resolve(); }
+    snap = next;
+    const done = redraw();
+    checkBuild();
+    return done;
   }
   function checkBuildFrom(next) { const keep = snap; snap = next; checkBuild(); snap = keep; }
   function connect() {
@@ -481,18 +543,24 @@
   }
   function togglePause() {
     paused = !paused; prefs.paused = paused; savePrefs();
-    if (!paused && pendingSnap) { snap = pendingSnap; pendingSnap = null; draw(); }
+    const said = paused ? 'Live updates paused.' : 'Live updates resumed.';
+    let shown = Promise.resolve();
+    if (!paused && pendingSnap) { snap = pendingSnap; pendingSnap = null; shown = redraw(); }
     drawPause();
-    announce(paused ? 'Live updates paused.' : 'Live updates resumed.');
+    shown.catch(() => {}).then(() => announce(said)); // after the redraw's own announcement on either path
   }
   $('pause').onclick = togglePause;
   drawPause();
 
   // ----- dashboard -----
+  // Announcements made in the same moment (a resume plus the changes it revealed) are read once, in order.
+  let announceTimer = 0, announceQueue = [];
   function announce(text) {
     if (!prefs.announce || !text) return;
+    announceQueue.push(text);
     $('announce').textContent = '';
-    setTimeout(() => { $('announce').textContent = text; }, 50);
+    clearTimeout(announceTimer);
+    announceTimer = setTimeout(() => { $('announce').textContent = announceQueue.join(' '); announceQueue = []; }, 50);
   }
 
   function draw() {
@@ -740,6 +808,7 @@
   // ----- updates -----
   // The server checks its own GitHub releases; the page offers the install and rides out the restart that follows.
   let expectRestart = false, updateBusy = false;
+  const installFailure = (u) => u.installError?.replace(/\.$/, ''); // the reason reads inside a sentence of its own
   function drawUpdate() {
     const u = snap?.update, bar = $('update-bar');
     if (!u) { bar.hidden = true; return; }
@@ -748,7 +817,7 @@
       bar.textContent = u.installed ? `Installed v${u.installed}. Restarting; this page reloads when the server is back.` : 'Updating: downloading and verifying the release…';
     } else if (u.available) {
       bar.hidden = false;
-      bar.replaceChildren(`Repo Pulse v${u.latest} is available (running v${snap.version}). `);
+      bar.replaceChildren(`${u.installError ? `Update failed: ${installFailure(u)}. ` : ''}Repo Pulse v${u.latest} is available (running v${snap.version}). `);
       if (u.url) bar.append(extLink('Release notes', u.url, 'linkbtn'));
       const b = el('button', 'linkbtn', u.container ? 'Pull the newer image' : 'Update now'); b.type = 'button';
       b.disabled = Boolean(u.container);
@@ -760,7 +829,7 @@
   async function installUpdate() {
     if (updateBusy) return;
     updateBusy = true;
-    const bar = $('update-bar'), note = $('update-note');
+    const bar = $('update-bar'), note = $('update-result');
     bar.hidden = false; bar.textContent = 'Updating: downloading and verifying the release…'; note.textContent = 'Updating…';
     $('update-install').disabled = true;
     try {
@@ -772,8 +841,10 @@
       note.textContent = bar.textContent;
       setConnection();
     } catch (err) {
-      bar.textContent = `Update failed: ${err.message}`;
-      note.textContent = `Update failed: ${err.message}`;
+      const text = /^Update failed/.test(err.message) ? err.message : `Update failed: ${err.message}`; // a 502 arrives prefixed, a refusal does not
+      note.textContent = text;
+      drawUpdate(); // an install failure is in the snapshot (the server broadcasts before answering), so the bar keeps its controls
+      if (!snap?.update?.installError) bar.prepend(`${text} `); // a refusal is not broadcast, so say it here
       if (/Admin token/.test(err.message)) showTab('settings');
     } finally { updateBusy = false; $('update-install').disabled = false; }
   }
@@ -783,7 +854,7 @@
     let text = `Repo Pulse v${snap.version}. `;
     if (!u.enabled) text += 'Automatic update checks are off (UPDATE_CHECK=0).';
     else if (!u.checkedAt) text += 'Not checked yet; it checks at startup and about once a month.';
-    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
+    else text += `Checked ${ago(u.checkedAt)}: ${u.available ? `v${u.latest} is available${u.installError ? ` (the last install failed: ${installFailure(u)})` : ''}.` : u.error ? `the check failed (${u.error}).` : 'up to date.'}`;
     if (u.container) text += ' Running in a container, so updates come from pulling the newer image.';
     $('update-status').textContent = text;
     $('update-check').hidden = !u.enabled;
@@ -791,7 +862,7 @@
   }
   $('update-install').onclick = installUpdate;
   $('update-check').onclick = async () => {
-    const note = $('update-note');
+    const note = $('update-result');
     note.textContent = 'Checking…';
     try {
       const res = await fetch('/api/update/check', { method: 'POST', headers: adminHeaders() });
@@ -816,6 +887,11 @@
     }
     return frag;
   }
+  // The header row is the single source for the column names and definitions: the stacked layout labels each cell
+  // from it, and the definitions list under the table is built from the headings' titles.
+  const velocityHeads = [...document.querySelectorAll('#velocity thead th')];
+  for (const th of velocityHeads) if (th.title) $('velocity-defs').append(el('dt', null, th.textContent), el('dd', null, th.title));
+  const labelCells = (tr) => { [...tr.cells].forEach((c, i) => { if (i) c.dataset.label = velocityHeads[i].textContent; }); return tr; };
   function drawVelocity() {
     const sec = $('velocity');
     const repos = (snap?.repos || []).filter((r) => !r.error && r.metrics);
@@ -833,7 +909,7 @@
     for (const r of repos) {
       const m = r.metrics, c = r.ciRuns, people = r.contributors;
       const tr = el('tr');
-      const nameTd = el('td'); nameTd.append(cardName(r)); tr.append(nameTd);
+      const nameTh = el('th', null, cardName(r)); nameTh.scope = 'row'; tr.append(nameTh);
       tr.append(cell(withDelta(r.merged7d, m.mergedPrev7d)));
       tr.append(cell(m.prsOpened7d == null ? '—' : fmt.format(m.prsOpened7d)));
       tr.append(cell(hoursText(m.cycleHours), null, m.mergedSample ? `median of ${m.mergedSample} merged pull request${m.mergedSample === 1 ? '' : 's'}` : 'nothing merged this week'));
@@ -844,9 +920,9 @@
       const net = m.issuesOpened7d == null || m.issuesClosed7d == null ? null : m.issuesOpened7d - m.issuesClosed7d;
       tr.append(cell(net == null ? '—' : `+${fmt.format(m.issuesOpened7d)} / −${fmt.format(m.issuesClosed7d)} (${net > 0 ? '+' : ''}${fmt.format(net)})`, net > 0 ? 'warnc' : ''));
       tr.append(cell(m.stalePrs == null ? '—' : fmt.format(m.stalePrs), m.stalePrs > 0 ? 'warnc' : ''));
-      tr.append(cell(c ? `${fmt.format(c.failed7d)} / ${fmt.format(c.runs7d)}${c.failing.length ? ` · ${c.failing.slice(0, 2).join(', ')}${c.failing.length > 2 ? ` +${c.failing.length - 2}` : ''}` : ''}` : '—', c?.failing.length ? 'bad' : c?.failed7d ? 'warnc' : '', c ? `Actions runs on ${c.branch} this week` : 'No Actions runs visible for this repository'));
+      tr.append(cell(c ? `${fmt.format(c.failed7d)} / ${fmt.format(c.runs7d)}${c.failing.length ? ` · ${c.failing.slice(0, 2).join(', ')}${c.failing.length > 2 ? ` +${c.failing.length - 2}` : ''}` : ''}` : '—', 'ci' + (c?.failing.length ? ' bad' : c?.failed7d ? ' warnc' : ''), c ? `Actions runs on ${c.branch} this week` : 'No Actions runs visible for this repository'));
       tr.append(cell(r.alerts == null ? '—' : fmt.format(r.alerts), r.alerts > 0 ? 'bad' : ''));
-      body.append(tr);
+      body.append(labelCells(tr));
       tot.merged += r.merged7d || 0; if (m.mergedPrev7d == null) tot.prevKnown = false; else tot.mergedPrev += m.mergedPrev7d;
       tot.opened += m.prsOpened7d || 0;
       tot.commits += r.commits7d || 0; if (r.commitsPrev7d == null) tot.cPrevKnown = false; else tot.commitsPrev += r.commitsPrev7d;
@@ -856,15 +932,18 @@
     }
     const total = $('velocity-total');
     total.replaceChildren();
-    if (repos.length < 2) return;
+    total.hidden = repos.length < 2; // a total of one repository says nothing
+    if (total.hidden) return;
     const net = tot.io - tot.ic;
-    total.append(el('td', null, 'All'));
+    const allTh = el('th', null, 'All'); allTh.scope = 'row';
+    total.append(allTh);
     total.append(cell(withDelta(tot.merged, tot.prevKnown ? tot.mergedPrev : null)), cell(fmt.format(tot.opened)), cell('—'), cell('—'),
       cell(withDelta(tot.commits, tot.cPrevKnown ? tot.commitsPrev : null)), cell('—'),
       cell(`+${fmt.format(tot.io)} / −${fmt.format(tot.ic)} (${net > 0 ? '+' : ''}${fmt.format(net)})`, net > 0 ? 'warnc' : ''),
       cell(fmt.format(tot.stale), tot.stale > 0 ? 'warnc' : ''),
       cell(tot.ciKnown ? `${fmt.format(tot.failed)} / ${fmt.format(tot.runs)}` : '—', tot.failed ? 'warnc' : ''),
       cell(tot.alertsKnown ? fmt.format(tot.alerts) : '—', tot.alerts > 0 ? 'bad' : ''));
+    labelCells(total);
   }
 
   let notified = 0;
@@ -972,7 +1051,7 @@
   const labelsValue = () => $('labels').value.split(',').map((s) => s.trim()).filter(Boolean);
   const settingsKey = (c) => JSON.stringify([c.org, c.repos, c.pollSeconds, c.includeArchived, c.issueLabels || []]);
   const draftKey = () => { const org = $('org').value.trim(); return JSON.stringify([org, draft.repos.map((p) => specOf(p, org)), Number($('poll').value), $('archived').checked, labelsValue()]); };
-  const helpRow = (text) => { const li = el('li', 'help', text); li.style.padding = '12px'; return li; };
+  const helpRow = (text) => el('li', 'help', text);
   const adminHeaders = () => ($('admin').value ? { 'X-Admin-Token': $('admin').value } : {});
 
   async function openSettings() {
@@ -1190,7 +1269,7 @@
   $('pref-velocity').onchange = () => { prefs.velocity = $('pref-velocity').checked; savePrefs(); drawVelocity(); };
   $('pref-theme').onchange = () => { prefs.theme = $('pref-theme').value; savePrefs(); applyTheme(); };
   $('pref-motion').onchange = () => { prefs.motion = $('pref-motion').checked; savePrefs(); applyTheme(); };
-  $('pref-bots').onchange = () => { prefs.hideBots = $('pref-bots').checked; savePrefs(); if (snap) draw(); };
+  $('pref-bots').onchange = () => { prefs.hideBots = $('pref-bots').checked; savePrefs(); if (snap) redraw(); };
   $('pref-announce').onchange = () => { prefs.announce = $('pref-announce').checked; savePrefs(); };
   $('pref-notify').onchange = async () => {
     prefs.notify = $('pref-notify').checked;

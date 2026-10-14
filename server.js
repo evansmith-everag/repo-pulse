@@ -19,6 +19,14 @@ const PAGE_PATH = path.join(ROOT, 'public', 'index.html');
 let PKG = {};
 try { PKG = JSON.parse(await readFile(path.join(ROOT, 'package.json'), 'utf8')); } catch {}
 const VERSION = PKG.version || '0.0.0';
+const semver = (s) => { const m = String(s).match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/) || []; return [1, 2, 3].map((i) => Number(m[i]) || 0); };
+const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
+// package.json's engines field is the one place the Node floor is defined; only a lower bound such as ">=22" or
+// ">=22.12" is understood. Below it the server warns and carries on, because an install that updated itself from an
+// older release must still start; the updater refuses a release whose floor this Node does not meet.
+const nodeFloor = (pkg) => (String(pkg.engines?.node || '').match(/^\s*(?:>=)?\s*v?(\d+(?:\.\d+){0,2})/) || [])[1] || '0';
+const belowNodeFloor = (pkg) => newer(nodeFloor(pkg), process.versions.node);
+if (belowNodeFloor(PKG)) console.error(`Repo Pulse v${VERSION} supports Node.js ${PKG.engines.node}; this is ${process.versions.node}. It may still run, but install a current Node.js from https://nodejs.org`);
 const UPDATE_REPO = process.env.UPDATE_REPO || String(PKG.repository?.url || PKG.repository || '').replace(/^github:/, '').replace(/^(git\+)?https?:\/\/github\.com\//, '').replace(/\.git$/, '');
 const UPDATE_CHECK = process.env.UPDATE_CHECK !== '0' && Boolean(UPDATE_REPO);
 const UPDATE_API = process.env.UPDATE_API || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
@@ -92,7 +100,7 @@ let pendingReason = null;
 let gapTimer = null;
 const clients = new Set();
 const seenDeliveries = []; // recent webhook delivery ids, so a captured delivery cannot be replayed
-let update = { enabled: UPDATE_CHECK, repo: UPDATE_REPO, current: VERSION, latest: null, available: false, url: null, publishedAt: null, notes: null, checkedAt: null, error: null, installing: false, installed: null, zipUrl: null, sumsUrl: null, zipName: null };
+let update = { enabled: UPDATE_CHECK, repo: UPDATE_REPO, current: VERSION, latest: null, available: false, url: null, publishedAt: null, notes: null, checkedAt: null, error: null, installing: false, installError: null, installed: null, zipUrl: null, sumsUrl: null, zipName: null };
 let updateTimer = null;
 
 const log = (msg) => console.log(`${new Date().toISOString()} ${msg}`);
@@ -103,21 +111,33 @@ const warn = (msg) => console.warn(`${new Date().toISOString()} ${msg}`);
 // served with and reloads itself when the server starts sending a different one (after an upgrade or an edit).
 
 const SERVER_HASH = createHash('sha256').update(await readFile(SERVER_PATH)).digest('hex').slice(0, 10);
-let page = { html: '', mtimeMs: -1, hash: '' };
+let page = { html: '', mtimeMs: -1, hash: '', csp: cspFor('') };
+
+// The page's inline script and stylesheet are allowed by hash, so the policy needs no 'unsafe-inline' and any
+// script injected into the page would be refused; Trusted Types enforcement refuses string-to-DOM sinks outright.
+function cspFor(html) {
+  const sha = (text) => `'sha256-${createHash('sha256').update(text).digest('base64')}'`;
+  const hashes = (tag) => [...html.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi'))].map((m) => sha(m[1])).join(' ') || "'none'";
+  return `default-src 'none'; script-src ${hashes('script')}; style-src ${hashes('style')}; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'`;
+}
 
 async function loadPage() {
   try {
     const st = await stat(PAGE_PATH);
     if (st.mtimeMs !== page.mtimeMs) {
-      const html = await readFile(PAGE_PATH, 'utf8');
-      page = { html, mtimeMs: st.mtimeMs, hash: createHash('sha256').update(html).digest('hex').slice(0, 10) };
+      // Browsers hash inline code after newline normalisation, so a CRLF checkout is served (and hashed) as LF text.
+      const raw = (await readFile(PAGE_PATH, 'utf8')).replace(/\r\n?/g, '\n');
+      const hash = createHash('sha256').update(raw).digest('hex').slice(0, 10);
+      // The build id is stamped here, so the policy is computed from exactly the text that is served.
+      const html = raw.replace('__BUILD__', buildId(hash));
+      page = { html, mtimeMs: st.mtimeMs, hash, csp: cspFor(html) };
     }
   } catch (err) {
     warn(`could not read ${PAGE_PATH}: ${err.message}`);
   }
   return page;
 }
-const buildId = () => `${SERVER_HASH}.${page.hash}`;
+const buildId = (hash = page.hash) => `${SERVER_HASH}.${hash}`;
 
 // ---------- config ----------
 
@@ -575,8 +595,6 @@ async function fetchOrgRepos(org, force = false) {
 
 // ---------- self-update ----------
 
-const semver = (s) => (String(s).match(/^v?(\d+)\.(\d+)\.(\d+)/) || [0, 0, 0, 0]).slice(1, 4).map(Number);
-const newer = (a, b) => { const [x, y] = [semver(a), semver(b)]; for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
 
 async function checkForUpdate(reason) {
   if (!UPDATE_CHECK) return update;
@@ -592,7 +610,7 @@ async function checkForUpdate(reason) {
     update = {
       ...update, latest, available: newer(latest, VERSION) && Boolean(zip && sums), url: rel.html_url || null, publishedAt: rel.published_at || null,
       notes: String(rel.body || '').slice(0, 4000), zipUrl: zip?.browser_download_url || null, sumsUrl: sums?.browser_download_url || null, zipName: zip?.name || null,
-      checkedAt: new Date().toISOString(), error: null,
+      checkedAt: new Date().toISOString(), error: null, installError: null, // a good check also retires the last install failure
     };
     log(update.available ? `update available: v${latest} (running v${VERSION}); install from Settings or POST /api/update` : `up to date at v${VERSION} (checked ${reason})`);
   } catch (err) {
@@ -614,8 +632,8 @@ function scheduleUpdateChecks() {
 }
 
 function publicUpdate() {
-  const { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed } = update;
-  return { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installed, container: IN_CONTAINER };
+  const { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installError, installed } = update;
+  return { enabled, repo, current, latest, available, url, publishedAt, checkedAt, error, installing, installError, installed, container: IN_CONTAINER };
 }
 
 // Installing an update rewrites the server's own code, so it is for administrators: the admin token when one is set,
@@ -672,7 +690,7 @@ async function installUpdate() {
   if (await stat(path.join(ROOT, '.git')).then(() => true, () => false)) throw refuse('This is a git checkout: run git pull (or check out the release tag) instead.');
   try { await writeFile(path.join(ROOT, '.write-test'), ''); await unlink(path.join(ROOT, '.write-test')); }
   catch { throw refuse(`The install folder ${ROOT} is not writable by this process; download the release zip instead.`); }
-  update = { ...update, installing: true, error: null };
+  update = { ...update, installing: true, installError: null };
   broadcast('snapshot', publicSnapshot());
   try {
     log(`downloading ${update.zipName} for v${update.latest}`);
@@ -685,6 +703,7 @@ async function installUpdate() {
     for (const need of REQUIRED_IN_RELEASE) if (!files.some((f) => f.target === need)) throw new Error(`the release zip has no ${need}`);
     const newPkg = JSON.parse(files.find((f) => f.target === 'package.json').data.toString('utf8'));
     if (!newer(newPkg.version, VERSION)) throw new Error(`the zip contains v${newPkg.version}, not newer than v${VERSION}`);
+    if (belowNodeFloor(newPkg)) throw new Error(`v${newPkg.version} needs Node.js ${newPkg.engines.node}; this is ${process.versions.node}. Install a current Node.js first.`);
     const backup = path.join(ROOT, '.previous');
     await mkdir(path.join(backup, 'public'), { recursive: true });
     for (const f of files) {
@@ -704,7 +723,7 @@ async function installUpdate() {
     }, 400).unref();
     return { ok: true, version: newPkg.version, restarting: true };
   } catch (err) {
-    update = { ...update, installing: false, error: err.message };
+    update = { ...update, installing: false, installError: err.message }; // kept apart from a failed check's error
     warn(`update failed: ${err.message}`);
     broadcast('snapshot', publicSnapshot());
     throw Object.assign(new Error(`Update failed: ${err.message}`), { status: 502 });
@@ -814,17 +833,16 @@ function broadcast(event, data) {
 // ---------- HTTP ----------
 
 const MIME = { '.html': 'text/html; charset=utf-8' };
-const CSP = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
-const BASE_HEADERS = {
+const baseHeaders = () => ({
   'Cache-Control': 'no-store',
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
   'X-Frame-Options': 'DENY',
-  'Content-Security-Policy': CSP,
-};
+  'Content-Security-Policy': page.csp,
+});
 
 function send(res, status, body, type = 'application/json', extra = {}) {
-  res.writeHead(status, { ...BASE_HEADERS, 'Content-Type': type, ...extra });
+  res.writeHead(status, { ...baseHeaders(), 'Content-Type': type, ...extra });
   res.end(type === 'application/json' ? JSON.stringify(body) : body);
 }
 
@@ -911,7 +929,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/events') {
       await loadPage();
       // X-Accel-Buffering tells nginx to stream instead of buffering the event stream.
-      res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.writeHead(200, { ...baseHeaders(), 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       res.write(`retry: 5000\nevent: snapshot\ndata: ${JSON.stringify(publicSnapshot())}\n\n`);
       clients.add(res);
       const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -921,7 +939,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/snapshot') {
       // The same document the page receives, for scripts and status pages. ETag lets pollers skip unchanged data.
       const etag = `"${snapshot.fetchedAt || 'none'}-${snapshot.failedAt || ''}"`;
-      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...BASE_HEADERS, ETag: etag }); return res.end(); }
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { ...baseHeaders(), ETag: etag }); return res.end(); }
       return send(res, 200, publicSnapshot(), 'application/json', { ETag: etag });
     }
     if (req.method === 'GET' && url.pathname === '/healthz') {
@@ -996,9 +1014,8 @@ const server = http.createServer(async (req, res) => {
       return send(res, 202, { ok: true });
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/index.html')) {
-      if (req.method === 'HEAD') { res.writeHead(200, { ...BASE_HEADERS, 'Content-Type': MIME['.html'] }); return res.end(); }
-      const { html } = await loadPage();
-      return send(res, 200, html.replace('__BUILD__', buildId()), MIME['.html']);
+      if (req.method === 'HEAD') { await loadPage(); res.writeHead(200, { ...baseHeaders(), 'Content-Type': MIME['.html'] }); return res.end(); }
+      return send(res, 200, (await loadPage()).html, MIME['.html']);
     }
     send(res, 404, { error: 'Not found' });
   } catch (err) {

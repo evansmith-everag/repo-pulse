@@ -8,19 +8,37 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch supersedes a run still going, which also keeps the live GitHub runs within budget.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22 # the oldest supported line (engines in package.json): the server suite against live GitHub
+            live: true
+            floor: true
+          - node: 26 # the current line: the server suite in fixture mode, plus the browser suite (live)
+            ui: true
+    name: test (Node ${{ matrix.node }})
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - name: Server tests
         run: npm run test:server
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEST_LIVE: ${{ matrix.live && '1' || '0' }}
+          TEST_NODE_FLOOR: ${{ matrix.floor && '1' || '' }}
+          GITHUB_TOKEN: ${{ matrix.live && secrets.GITHUB_TOKEN || '' }}
       - name: Browser tests
+        if: matrix.ui
         run: npm run test:ui
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
